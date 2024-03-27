@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 
-use super::SignalReceiver;
 use super::{ProcessControlHandler, Runnable, RuntimeError};
 
 pub struct ProcessManager {
@@ -12,17 +11,11 @@ pub struct ProcessManager {
 
 impl ProcessManager {
     pub fn new() -> Self {
-        Self {
-            processes: vec![Arc::new(Box::<SignalReceiver>::default())],
-        }
+        Self { processes: vec![] }
     }
 
-    pub fn insert(
-        &mut self,
-        process: impl Runnable + Send + Sync + 'static,
-    ) -> Result<(), RuntimeError> {
+    pub fn insert(&mut self, process: impl Runnable + Send + Sync + 'static) {
         self.processes.push(Arc::new(Box::new(process)));
-        Ok(())
     }
 }
 
@@ -88,7 +81,7 @@ impl Default for ProcessManager {
 }
 
 struct ProcessHandle<'a> {
-    runtime_handles: Vec<(&'a str, Box<dyn ProcessControlHandler >)>,
+    runtime_handles: Vec<(&'a str, Box<dyn ProcessControlHandler>)>,
 }
 
 #[async_trait::async_trait]

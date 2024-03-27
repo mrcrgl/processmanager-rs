@@ -1,4 +1,3 @@
-
 #[derive(thiserror::Error, Debug)]
 pub enum RuntimeError {
     #[error("internal error: {message}")]
@@ -7,4 +6,3 @@ pub enum RuntimeError {
     #[error("process termination requested")]
     TerminationSignal,
 }
-

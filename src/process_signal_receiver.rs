@@ -52,13 +52,13 @@ impl Runnable for SignalReceiver {
                 ProcessOperation::Control(RuntimeControlMessage::Reload) => continue,
             };
 
-      //      tracing::warn!("Received process signal: {signal:?}");
+            //      tracing::warn!("Received process signal: {signal:?}");
 
             match signal {
                 SIGHUP => {
                     // Reload configuration
                     // Reopen the log file
-       //             tracing::warn!("signal handler {signal:?} not implemented");
+                    //             tracing::warn!("signal handler {signal:?} not implemented");
                 }
                 SIGTERM | SIGINT | SIGQUIT => {
                     // Shutdown the system;

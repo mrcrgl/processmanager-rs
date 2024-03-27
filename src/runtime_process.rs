@@ -15,7 +15,10 @@ pub trait Runnable {
 }
 
 #[async_trait::async_trait]
-pub trait ProcessControlHandler where Self: Send + Sync {
+pub trait ProcessControlHandler
+where
+    Self: Send + Sync,
+{
     async fn shutdown(&self);
 
     async fn reload(&self);
