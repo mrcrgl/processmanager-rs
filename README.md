@@ -45,7 +45,6 @@ async fn main() {
     }
 
     let mut manager = ProcessManager::new();
-    manager.insert(SignalReceiver::default());
     manager.insert(ExampleController::default());
 
     let handle = manager.process_handle();

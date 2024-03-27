@@ -30,8 +30,10 @@ impl Runnable for ProcessManager {
             Fut: Future<Output = ()>,
             F: FnOnce() -> Fut,
         {
-            let proc_name = proc.process_name().to_string();
-            //tracing::info!("Start process {proc_name}");
+            #[cfg(feature = "log")]
+            ::log::info!("Start process {}", proc.process_name());
+            #[cfg(feature = "tracing")]
+            ::tracing::info!("Start process {}", proc.process_name());
 
             let proc = proc.to_owned();
             tokio::spawn(async move { proc.process_start().await })
@@ -40,13 +42,16 @@ impl Runnable for ProcessManager {
                         message: format!("tokio spawn join error: {err:?}"),
                     })?;
                     if prev.is_err() {
-                        /*          tracing::error!(
-                            "Process {proc_name} stopped unexpectedly: {:?}",
-                            prev.as_ref().unwrap_err()
-                        );*/
+                        #[cfg(feature = "log")]
+                        ::log::error!("Process {proc_name} stopped unexpectedly: {:?}",prev.as_ref().unwrap_err());
+                        #[cfg(feature = "tracing")]
+                        ::tracing::error!("Process {proc_name} stopped unexpectedly: {:?}",prev.as_ref().unwrap_err());
                         init_shutdown().await;
                     } else {
-                        //tracing::info!("Process {proc_name} stopped");
+                        #[cfg(feature = "log")]
+                        ::log::info!("Process {proc_name} stopped");
+                        #[cfg(feature = "tracing")]
+                        ::tracing::info!("Process {proc_name} stopped");
                     }
                     prev
                 })
@@ -88,23 +93,25 @@ struct ProcessHandle<'a> {
 impl ProcessControlHandler for ProcessHandle<'_> {
     async fn shutdown(&self) {
         // TODO make shutdowns in parallel
+        #[allow(unused_variables)]
         for (name, runtime_handle) in self.runtime_handles.iter() {
-            //tracing::info!("Initiate shutdown on process {name}");
+            #[cfg(feature = "log")]
+            ::log::info!("Initiate shutdown on process {name}");
+            #[cfg(feature = "tracing")]
+            ::tracing::info!("Initiate shutdown on process {name}");
             runtime_handle.shutdown().await;
         }
     }
 
     async fn reload(&self) {
         // TODO make reloads in parallel
+        #[allow(unused_variables)]
         for (name, runtime_handle) in self.runtime_handles.iter() {
-            //tracing::info!("Initiate reload on process {name}");
+            #[cfg(feature = "log")]
+            ::log::info!("Initiate reload on process {name}");
+            #[cfg(feature = "tracing")]
+            ::tracing::info!("Initiate reload on process {name}");
             runtime_handle.reload().await;
         }
-    }
-}
-
-impl Clone for ProcessHandle<'_> {
-    fn clone(&self) -> Self {
-        todo!()
     }
 }

@@ -39,7 +39,6 @@
 ///     }
 ///
 ///     let mut manager = ProcessManager::new();
-///     manager.insert(SignalReceiver::default());
 ///     manager.insert(ExampleController::default());
 ///
 ///     let handle = manager.process_handle();
@@ -56,10 +55,10 @@
 ///
 mod error;
 mod process_manager;
-mod process_signal_receiver;
 mod runtime_process;
+#[cfg(feature = "signal")]
+pub mod receiver;
 
 pub use error::*;
 pub use process_manager::*;
-pub use process_signal_receiver::*;
 pub use runtime_process::*;
