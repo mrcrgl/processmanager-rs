@@ -1,5 +1,6 @@
 [package]
 name = "processmanager"
+description = "manage process lifecycles, graceful shutdown and process faults"
 version = "0.1.0"
 edition = "2021"
 authors = ["Marc Riegel <mail@mrcrgl.de>"]
