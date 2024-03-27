@@ -1,4 +1,6 @@
-///
+/// Manage multiple running services. A ProcessManager collects impl of `Runnable`
+/// and takes over the runtime management like starting, stopping (graceful or in
+/// failure) of services.
 ///
 /// ```rust
 /// use processmanager::*;
