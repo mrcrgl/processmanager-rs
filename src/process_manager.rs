@@ -30,10 +30,12 @@ impl Runnable for ProcessManager {
             Fut: Future<Output = ()>,
             F: FnOnce() -> Fut,
         {
+            let proc_name = proc.process_name();
+
             #[cfg(feature = "log")]
-            ::log::info!("Start process {}", proc.process_name());
+            ::log::info!("Start process {proc_name}");
             #[cfg(feature = "tracing")]
-            ::tracing::info!("Start process {}", proc.process_name());
+            ::tracing::info!("Start process {proc_name}");
 
             let proc = proc.to_owned();
             tokio::spawn(async move { proc.process_start().await })
