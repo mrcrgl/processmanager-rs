@@ -43,9 +43,15 @@ impl Runnable for ProcessManager {
                     })?;
                     if prev.is_err() {
                         #[cfg(feature = "log")]
-                        ::log::error!("Process {proc_name} stopped unexpectedly: {:?}",prev.as_ref().unwrap_err());
+                        ::log::error!(
+                            "Process {proc_name} stopped unexpectedly: {:?}",
+                            prev.as_ref().unwrap_err()
+                        );
                         #[cfg(feature = "tracing")]
-                        ::tracing::error!("Process {proc_name} stopped unexpectedly: {:?}",prev.as_ref().unwrap_err());
+                        ::tracing::error!(
+                            "Process {proc_name} stopped unexpectedly: {:?}",
+                            prev.as_ref().unwrap_err()
+                        );
                         init_shutdown().await;
                     } else {
                         #[cfg(feature = "log")]

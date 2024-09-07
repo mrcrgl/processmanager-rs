@@ -23,7 +23,7 @@
 ///                 match self.runtime_guard.tick(interval.tick()).await {
 ///                     ProcessOperation::Next(_) => println!("work"),
 ///                     ProcessOperation::Control(RuntimeControlMessage::Shutdown) => {
-///                         println!("shutdown"); 
+///                         println!("shutdown");
 ///                         break
 ///                     },
 ///                     ProcessOperation::Control(RuntimeControlMessage::Reload) => println!("trigger relead"),
@@ -55,9 +55,9 @@
 ///
 mod error;
 mod process_manager;
-mod runtime_process;
 #[cfg(feature = "signal")]
 pub mod receiver;
+mod runtime_process;
 
 pub use error::*;
 pub use process_manager::*;
