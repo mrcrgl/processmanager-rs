@@ -48,7 +48,7 @@
 ///         manager.process_start().await.expect("service start failed");
 ///     });
 ///
-///     // Shutdown waits for all services to shutdown gracefully.
+///     // Shutdown waits for all services to shut down gracefully.
 ///     handle.shutdown().await;
 /// }
 /// ```
