@@ -1,8 +1,8 @@
-use std::ops::Add;
 use processmanager::{
     ProcessControlHandler, ProcessManager, ProcessOperation, Runnable, RuntimeControlMessage,
     RuntimeError, RuntimeGuard,
 };
+use std::ops::Add;
 use std::time::Duration;
 use tokio::sync::oneshot::channel;
 use tokio::time::timeout;
@@ -28,16 +28,18 @@ impl Runnable for ExampleController {
                 ProcessOperation::Next(_) => {
                     if let Some(die_after) = self.die_after {
                         if started.add(die_after).lt(&tokio::time::Instant::now()) {
-                            return Err(RuntimeError::Internal { message: format!("died after {:?}", die_after) })
+                            return Err(RuntimeError::Internal {
+                                message: format!("died after {:?}", die_after),
+                            });
                         }
                     }
                     if let Some(exit_after) = self.exit_after {
                         if started.add(exit_after).lt(&tokio::time::Instant::now()) {
-                            return Ok(())
+                            return Ok(());
                         }
                     }
                     println!("work {}", self.id)
-                },
+                }
                 ProcessOperation::Control(RuntimeControlMessage::Shutdown) => {
                     println!("shutdown {}", self.id);
                     break;
@@ -139,7 +141,6 @@ async fn test_process_runnable_multiple() {
     );
 }
 
-
 #[tokio::test]
 async fn test_nested_process_runnable_multiple() {
     let controller1 = ExampleController::new(1, None, None);
@@ -220,8 +221,8 @@ async fn test_process_runnable_multiple_one_exits() {
 
 #[tokio::test]
 async fn test_nested_process_runnable_multiple_one_dies() {
-    let controller1 = ExampleController::new(1, None, None );
-    let controller2 = ExampleController::new(2, Some(Duration::from_secs(2)), None );
+    let controller1 = ExampleController::new(1, None, None);
+    let controller2 = ExampleController::new(2, Some(Duration::from_secs(2)), None);
 
     let mut manager = ProcessManager::new();
 
@@ -251,8 +252,8 @@ async fn test_nested_process_runnable_multiple_one_dies() {
 
 #[tokio::test]
 async fn test_nested_process_runnable_multiple_one_exits_1() {
-    let controller1 = ExampleController::new(1, None, None );
-    let controller2 = ExampleController::new(2, None, Some(Duration::from_secs(2)) );
+    let controller1 = ExampleController::new(1, None, None);
+    let controller2 = ExampleController::new(2, None, Some(Duration::from_secs(2)));
 
     let mut manager1 = ProcessManager::new();
     manager1.insert(controller1);
@@ -268,7 +269,7 @@ async fn test_nested_process_runnable_multiple_one_exits_1() {
 
     let _handle = manager.process_handle();
     tokio::task::spawn(async move {
-       let _ = manager.process_start().await;
+        let _ = manager.process_start().await;
         tx.send(true).unwrap();
     });
 
@@ -280,8 +281,8 @@ async fn test_nested_process_runnable_multiple_one_exits_1() {
 
 #[tokio::test]
 async fn test_nested_process_runnable_multiple_one_exits_2() {
-    let controller1 = ExampleController::new(1, None, None );
-    let controller2 = ExampleController::new(2, None, Some(Duration::from_secs(2)) );
+    let controller1 = ExampleController::new(1, None, None);
+    let controller2 = ExampleController::new(2, None, Some(Duration::from_secs(2)));
 
     let mut manager1 = ProcessManager::new();
     manager1.insert(controller1);

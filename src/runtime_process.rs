@@ -45,7 +45,8 @@ impl RuntimeGuard {
     pub fn new() -> Self {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
 
-        let ticker_ch_sender: Arc<Mutex<Option<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>> = Arc::new(Mutex::new(None));
+        let ticker_ch_sender: Arc<Mutex<Option<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>> =
+            Arc::new(Mutex::new(None));
         let runtime_ticker_ch_sender = ticker_ch_sender.clone();
         tokio::task::spawn(async move {
             loop {
@@ -93,7 +94,7 @@ impl RuntimeGuard {
     pub async fn is_running(&self) -> bool {
         let lock = self.runtime_ticker_ch_sender.lock().await;
 
-        let ch_closed = lock.as_ref().map(|ch|ch.is_closed()).unwrap_or(true);
+        let ch_closed = lock.as_ref().map(|ch| ch.is_closed()).unwrap_or(true);
 
         !ch_closed
     }
@@ -122,14 +123,18 @@ impl ProcessControlHandler for RuntimeHandle {
     async fn shutdown(&self) {
         let ch = self.control_ch.lock().await;
         if !ch.is_closed() {
-            ch.send(RuntimeControlMessage::Shutdown).await.expect("send control message")
+            ch.send(RuntimeControlMessage::Shutdown)
+                .await
+                .expect("send control message")
         }
     }
 
     async fn reload(&self) {
         let ch = self.control_ch.lock().await;
         if !ch.is_closed() {
-            ch.send(RuntimeControlMessage::Reload).await.expect("send control message")
+            ch.send(RuntimeControlMessage::Reload)
+                .await
+                .expect("send control message")
         }
     }
 }
@@ -141,9 +146,12 @@ pub struct RuntimeTicker {
 impl RuntimeTicker {
     fn new() -> (Self, tokio::sync::mpsc::Sender<RuntimeControlMessage>) {
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        (Self {
-            control_ch_receiver: Mutex::new(receiver),
-        }, sender)
+        (
+            Self {
+                control_ch_receiver: Mutex::new(receiver),
+            },
+            sender,
+        )
     }
 
     pub async fn tick<O, Fut>(&self, fut: Fut) -> ProcessOperation<O>

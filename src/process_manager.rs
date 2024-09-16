@@ -1,7 +1,7 @@
-use std::future::Future;
-use std::sync::{Arc, OnceLock};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use futures::FutureExt;
+use std::future::Future;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use super::{ProcessControlHandler, Runnable, RuntimeError};
 
@@ -15,7 +15,10 @@ pub struct ProcessManager {
 impl ProcessManager {
     pub fn new() -> Self {
         let pid = PID.get_or_init(|| AtomicUsize::new(0));
-        Self { id: pid.fetch_add(1, Ordering::SeqCst), processes: vec![] }
+        Self {
+            id: pid.fetch_add(1, Ordering::SeqCst),
+            processes: vec![],
+        }
     }
 
     pub fn insert(&mut self, process: impl Runnable + Send + Sync + 'static) {
@@ -89,10 +92,16 @@ impl Runnable for ProcessManager {
         #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
         eprintln!("Manager {} started", self.process_name());
 
-        let result = futures::future::try_join_all(process_futures).await.map(|_|());
+        let result = futures::future::try_join_all(process_futures)
+            .await
+            .map(|_| ());
 
         #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
-        eprintln!("Manager {} end err={:?}", self.process_name(), result.is_err());
+        eprintln!(
+            "Manager {} end err={:?}",
+            self.process_name(),
+            result.is_err()
+        );
 
         result
     }
