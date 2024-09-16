@@ -1,5 +1,6 @@
 use super::RuntimeError;
 use std::future::Future;
+use std::sync::Arc;
 use tokio::select;
 use tokio::sync::Mutex;
 
@@ -7,8 +8,8 @@ use tokio::sync::Mutex;
 pub trait Runnable {
     async fn process_start(&self) -> Result<(), RuntimeError>;
 
-    fn process_name(&self) -> &'static str {
-        std::any::type_name::<Self>()
+    fn process_name(&self) -> String {
+        std::any::type_name::<Self>().to_string()
     }
 
     fn process_handle(&self) -> Box<dyn ProcessControlHandler>;
@@ -36,15 +37,38 @@ pub enum RuntimeControlMessage {
 }
 
 pub struct RuntimeGuard {
-    control_ch_receiver: Mutex<tokio::sync::mpsc::Receiver<RuntimeControlMessage>>,
+    runtime_ticker_ch_sender: Arc<Mutex<Option<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>>,
     control_ch_sender: tokio::sync::mpsc::Sender<RuntimeControlMessage>,
 }
 
 impl RuntimeGuard {
     pub fn new() -> Self {
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+
+        let ticker_ch_sender: Arc<Mutex<Option<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>> =
+            Arc::new(Mutex::new(None));
+        let runtime_ticker_ch_sender = ticker_ch_sender.clone();
+        tokio::task::spawn(async move {
+            loop {
+                if let Some(message) = receiver.recv().await {
+                    let mut lock = runtime_ticker_ch_sender.lock().await;
+
+                    if let Some(sender) = lock.as_mut() {
+                        if sender.is_closed() {
+                            // If the ticker sender is closed, we break the loop which
+                            // brings `receiver` out of scope and closed the `RuntimeGuard`.
+                            // Consecutive `shutdown` resolve the future immediately.
+                            break;
+                        }
+
+                        sender.send(message).await.unwrap();
+                    }
+                }
+            }
+        });
+
         Self {
-            control_ch_receiver: Mutex::new(receiver),
+            runtime_ticker_ch_sender: ticker_ch_sender,
             control_ch_sender: sender,
         }
     }
@@ -53,6 +77,81 @@ impl RuntimeGuard {
         RuntimeHandle {
             control_ch: Mutex::new(self.control_ch_sender.clone()),
         }
+    }
+
+    pub async fn runtime_ticker(&self) -> RuntimeTicker {
+        assert!(!self.is_running().await, "process already started");
+
+        let mut lock = self.runtime_ticker_ch_sender.lock().await;
+
+        let (ticker, sender) = RuntimeTicker::new();
+
+        lock.replace(sender);
+
+        ticker
+    }
+
+    pub async fn is_running(&self) -> bool {
+        let lock = self.runtime_ticker_ch_sender.lock().await;
+
+        let ch_closed = lock.as_ref().map(|ch| ch.is_closed()).unwrap_or(true);
+
+        !ch_closed
+    }
+
+    pub async fn block_until_shutdown(&self) {
+        loop {
+            if !self.is_running().await {
+                break;
+            }
+        }
+    }
+}
+
+impl Default for RuntimeGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct RuntimeHandle {
+    control_ch: Mutex<tokio::sync::mpsc::Sender<RuntimeControlMessage>>,
+}
+
+#[async_trait::async_trait]
+impl ProcessControlHandler for RuntimeHandle {
+    async fn shutdown(&self) {
+        let ch = self.control_ch.lock().await;
+        if !ch.is_closed() {
+            ch.send(RuntimeControlMessage::Shutdown)
+                .await
+                .expect("send control message")
+        }
+    }
+
+    async fn reload(&self) {
+        let ch = self.control_ch.lock().await;
+        if !ch.is_closed() {
+            ch.send(RuntimeControlMessage::Reload)
+                .await
+                .expect("send control message")
+        }
+    }
+}
+
+pub struct RuntimeTicker {
+    control_ch_receiver: Mutex<tokio::sync::mpsc::Receiver<RuntimeControlMessage>>,
+}
+
+impl RuntimeTicker {
+    fn new() -> (Self, tokio::sync::mpsc::Sender<RuntimeControlMessage>) {
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        (
+            Self {
+                control_ch_receiver: Mutex::new(receiver),
+            },
+            sender,
+        )
     }
 
     pub async fn tick<O, Fut>(&self, fut: Fut) -> ProcessOperation<O>
@@ -72,45 +171,5 @@ impl RuntimeGuard {
         drop(lock);
 
         response
-    }
-
-    pub async fn block_until_shutdown(&self) -> RuntimeControlMessage {
-        loop {
-            let mut lock = self.control_ch_receiver.lock().await;
-            if let Some(message) = lock.recv().await {
-                return message;
-            }
-        }
-    }
-}
-
-impl Default for RuntimeGuard {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub struct RuntimeHandle {
-    control_ch: Mutex<tokio::sync::mpsc::Sender<RuntimeControlMessage>>,
-}
-
-#[async_trait::async_trait]
-impl ProcessControlHandler for RuntimeHandle {
-    async fn shutdown(&self) {
-        self.control_ch
-            .lock()
-            .await
-            .send(RuntimeControlMessage::Shutdown)
-            .await
-            .expect("send control message");
-    }
-
-    async fn reload(&self) {
-        self.control_ch
-            .lock()
-            .await
-            .send(RuntimeControlMessage::Reload)
-            .await
-            .expect("send control message");
     }
 }

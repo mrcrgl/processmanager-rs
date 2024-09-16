@@ -43,9 +43,10 @@ impl Default for SignalReceiver {
 impl Runnable for SignalReceiver {
     async fn process_start(&self) -> Result<(), RuntimeError> {
         let mut signals = self.signals.lock().await;
+        let ticker = self.runtime_guard.runtime_ticker().await;
 
         loop {
-            let signal = match self.runtime_guard.tick(signals.next()).await {
+            let signal = match ticker.tick(signals.next()).await {
                 ProcessOperation::Next(None) => continue,
                 ProcessOperation::Next(Some(signal)) => signal,
                 ProcessOperation::Control(RuntimeControlMessage::Shutdown) => break,
