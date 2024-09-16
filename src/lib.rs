@@ -16,11 +16,13 @@
 ///     #[async_trait::async_trait]
 ///     impl Runnable for ExampleController {
 ///         async fn process_start(&self) -> Result<(), RuntimeError> {
+///             let ticker = self.runtime_guard.runtime_ticker().await;
+///
 ///             // This can be any type of future like an async streams
 ///             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
 ///
 ///             loop {
-///                 match self.runtime_guard.tick(interval.tick()).await {
+///                 match ticker.tick(interval.tick()).await {
 ///                     ProcessOperation::Next(_) => println!("work"),
 ///                     ProcessOperation::Control(RuntimeControlMessage::Shutdown) => {
 ///                         println!("shutdown");
