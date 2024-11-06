@@ -101,6 +101,7 @@ impl RuntimeGuard {
 
     pub async fn block_until_shutdown(&self) {
         loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             if !self.is_running().await {
                 break;
             }
