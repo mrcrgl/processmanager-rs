@@ -48,7 +48,7 @@ impl RuntimeGuard {
         let ticker_ch_sender: Arc<Mutex<Option<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>> =
             Arc::new(Mutex::new(None));
         let runtime_ticker_ch_sender = ticker_ch_sender.clone();
-        tokio::task::spawn(async move {
+        ::tokio::task::spawn(async move {
             loop {
                 if let Some(message) = receiver.recv().await {
                     let mut lock = runtime_ticker_ch_sender.lock().await;
@@ -63,6 +63,8 @@ impl RuntimeGuard {
 
                         sender.send(message).await.unwrap();
                     }
+                } else {
+                    ::tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }
         });
