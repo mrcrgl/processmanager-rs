@@ -33,7 +33,7 @@ impl RuntimeGuard {
                         break; // ticker dropped
                     }
                 } else {
-                    ::tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    ::tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
             }
         });
@@ -70,7 +70,7 @@ impl RuntimeGuard {
     /// Busy-wait helper for tests / demos.
     pub async fn block_until_shutdown(&self) {
         while self.is_running().await {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
 }
