@@ -31,10 +31,6 @@ impl ProcessManager {
     }
 }
 
-/* ------------------------------------------------------------------------
-Runnable implementation
---------------------------------------------------------------------- */
-
 impl Runnable for ProcessManager {
     fn process_start(&self) -> ProcFuture<'_> {
         Box::pin(async move {
@@ -134,10 +130,6 @@ impl Default for ProcessManager {
         Self::new()
     }
 }
-
-/* ------------------------------------------------------------------------
-Internal ProcessHandle
---------------------------------------------------------------------- */
 
 struct ProcessHandle {
     runtime_handles: Vec<(String, Box<dyn ProcessControlHandler>)>,
