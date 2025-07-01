@@ -1,7 +1,7 @@
 # ProcessManager
 
 Manage multiple running services. A ProcessManager collects impl of `Runnable`
-and takes over the runtime management like starting, stopping (graceful or in 
+and takes over the runtime management like starting, stopping (graceful or in
 failure) of services.
 
 If one service fails, the manager initiates  a graceful shutdown for all other.
@@ -19,24 +19,25 @@ async fn main() {
         runtime_guard: RuntimeGuard,
     }
 
-    #[async_trait::async_trait]
     impl Runnable for ExampleController {
-        async fn process_start(&self) -> Result<(), RuntimeError> {
-            // This can be any type of future like an async streams
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+        fn process_start(&self) -> ProcFuture<'_> {
+            Box::pin(async {
+                // This can be any type of future like an async streams
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
 
-            loop {
-                match self.runtime_guard.tick(interval.tick()).await {
-                    ProcessOperation::Next(_) => println!("work"),
-                    ProcessOperation::Control(RuntimeControlMessage::Shutdown) => {
-                        println!("shutdown"); 
-                        break
-                    },
-                    ProcessOperation::Control(RuntimeControlMessage::Reload) => println!("trigger relead"),
+                loop {
+                    match self.runtime_guard.tick(interval.tick()).await {
+                        ProcessOperation::Next(_) => println!("work"),
+                        ProcessOperation::Control(RuntimeControlMessage::Shutdown) => {
+                            println!("shutdown");
+                            break
+                        },
+                        ProcessOperation::Control(RuntimeControlMessage::Reload) => println!("trigger relead"),
+                    }
                 }
-            }
 
-            Ok(())
+                Ok(())
+            })
         }
 
         fn process_handle(&self) -> Box<dyn ProcessControlHandler> {
