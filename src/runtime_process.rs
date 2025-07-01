@@ -67,6 +67,7 @@ impl RuntimeGuard {
 
         let ticker_sender: Arc<Mutex<Option<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>> =
             Arc::new(Mutex::new(None));
+
         let fanout_sender = Arc::clone(&ticker_sender);
 
         // Fan-out task: forward messages from the central control channel to
@@ -78,6 +79,8 @@ impl RuntimeGuard {
                     if s.send(msg).await.is_err() {
                         break; // ticker dropped
                     }
+                } else {
+                    ::tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }
         });
