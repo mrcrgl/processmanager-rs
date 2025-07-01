@@ -1,6 +1,6 @@
 use processmanager::{
-    ProcessControlHandler, ProcessManager, ProcessOperation, Runnable, RuntimeControlMessage,
-    RuntimeError, RuntimeGuard,
+    ProcFuture, ProcessControlHandler, ProcessManager, ProcessOperation, Runnable,
+    RuntimeControlMessage, RuntimeError, RuntimeGuard,
 };
 use std::ops::Add;
 use std::time::Duration;
@@ -15,42 +15,43 @@ struct ExampleController {
     runtime_guard: RuntimeGuard,
 }
 
-#[async_trait::async_trait]
 impl Runnable for ExampleController {
-    async fn process_start(&self) -> Result<(), RuntimeError> {
-        let ticker = self.runtime_guard.runtime_ticker().await;
-        // This can be any type of future like an async streams
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
-        let started = tokio::time::Instant::now();
+    fn process_start(&self) -> ProcFuture<'_> {
+        Box::pin(async {
+            let ticker = self.runtime_guard.runtime_ticker().await;
+            // This can be any type of future like an async streams
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+            let started = tokio::time::Instant::now();
 
-        loop {
-            match ticker.tick(interval.tick()).await {
-                ProcessOperation::Next(_) => {
-                    if let Some(die_after) = self.die_after {
-                        if started.add(die_after).lt(&tokio::time::Instant::now()) {
-                            return Err(RuntimeError::Internal {
-                                message: format!("died after {:?}", die_after),
-                            });
+            loop {
+                match ticker.tick(interval.tick()).await {
+                    ProcessOperation::Next(_) => {
+                        if let Some(die_after) = self.die_after {
+                            if started.add(die_after).lt(&tokio::time::Instant::now()) {
+                                return Err(RuntimeError::Internal {
+                                    message: format!("died after {:?}", die_after),
+                                });
+                            }
                         }
-                    }
-                    if let Some(exit_after) = self.exit_after {
-                        if started.add(exit_after).lt(&tokio::time::Instant::now()) {
-                            return Ok(());
+                        if let Some(exit_after) = self.exit_after {
+                            if started.add(exit_after).lt(&tokio::time::Instant::now()) {
+                                return Ok(());
+                            }
                         }
+                        println!("work {}", self.id)
                     }
-                    println!("work {}", self.id)
-                }
-                ProcessOperation::Control(RuntimeControlMessage::Shutdown) => {
-                    println!("shutdown {}", self.id);
-                    break;
-                }
-                ProcessOperation::Control(RuntimeControlMessage::Reload) => {
-                    println!("trigger reload {}", self.id)
+                    ProcessOperation::Control(RuntimeControlMessage::Shutdown) => {
+                        println!("shutdown {}", self.id);
+                        break;
+                    }
+                    ProcessOperation::Control(RuntimeControlMessage::Reload) => {
+                        println!("trigger reload {}", self.id)
+                    }
                 }
             }
-        }
 
-        Ok(())
+            Ok(())
+        })
     }
 
     fn process_handle(&self) -> Box<dyn ProcessControlHandler> {

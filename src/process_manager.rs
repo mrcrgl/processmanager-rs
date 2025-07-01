@@ -3,13 +3,17 @@ use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use super::{ProcessControlHandler, Runnable, RuntimeError};
+use super::{CtrlFuture, ProcFuture, ProcessControlHandler, Runnable, RuntimeError};
 
 static PID: OnceLock<AtomicUsize> = OnceLock::new();
 
+/// Groups several [`Runnable`] instances and starts / stops them as a unit.
+///
+/// Every child process runs in its own Tokio task; if one exits with an error
+/// the manager propagates a shutdown to the remaining ones.
 pub struct ProcessManager {
     id: usize,
-    processes: Vec<Arc<Box<dyn Runnable + Send + Sync + 'static>>>,
+    processes: Vec<Arc<Box<dyn Runnable>>>,
 }
 
 impl ProcessManager {
@@ -17,93 +21,97 @@ impl ProcessManager {
         let pid = PID.get_or_init(|| AtomicUsize::new(0));
         Self {
             id: pid.fetch_add(1, Ordering::SeqCst),
-            processes: vec![],
+            processes: Vec::new(),
         }
     }
 
-    pub fn insert(&mut self, process: impl Runnable + Send + Sync + 'static) {
+    /// Register a child process. Call this **before** the manager is started.
+    pub fn insert(&mut self, process: impl Runnable) {
         self.processes.push(Arc::new(Box::new(process)));
     }
 }
 
-#[async_trait::async_trait]
+/* ------------------------------------------------------------------------
+Runnable implementation
+--------------------------------------------------------------------- */
+
 impl Runnable for ProcessManager {
-    async fn process_start(&self) -> Result<(), RuntimeError> {
-        async fn wrap_proc<F, Fut>(
-            proc: Arc<Box<dyn Runnable + Send + Sync + 'static>>,
-            init_shutdown: F,
-        ) -> Result<(), RuntimeError>
-        where
-            Fut: Future<Output = ()>,
-            F: FnOnce() -> Fut,
-        {
-            let proc_name = proc.process_name();
+    fn process_start(&self) -> ProcFuture<'_> {
+        Box::pin(async move {
+            /// Helper that spawns a process and handles its completion.
+            async fn wrap_proc<F, Fut>(
+                proc: Arc<Box<dyn Runnable>>,
+                init_shutdown: F,
+            ) -> Result<(), RuntimeError>
+            where
+                Fut: Future<Output = ()>,
+                F: FnOnce() -> Fut,
+            {
+                let name = proc.process_name();
 
-            #[cfg(feature = "log")]
-            ::log::info!("Start process {proc_name}");
-            #[cfg(feature = "tracing")]
-            ::tracing::info!("Start process {proc_name}");
+                #[cfg(feature = "tracing")]
+                ::tracing::info!("Start process {name}");
+                #[cfg(all(not(feature = "tracing"), feature = "log"))]
+                ::log::info!("Start process {name}");
+                #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+                eprintln!("Start process {name}");
+
+                let fut = async move { proc.process_start().await };
+
+                tokio::spawn(fut)
+                    .then(|join| async {
+                        let result = join.map_err(|err| RuntimeError::Internal {
+                            message: format!("tokio join error: {err:?}"),
+                        })?;
+
+                        match result {
+                            Ok(_) => {
+                                #[cfg(feature = "tracing")]
+                                ::tracing::info!("Process {name} stopped");
+                                #[cfg(all(not(feature = "tracing"), feature = "log"))]
+                                ::log::info!("Process {name} stopped");
+                                #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+                                eprintln!("Process {name} stopped");
+                            }
+                            Err(ref err) => {
+                                #[cfg(feature = "tracing")]
+                                ::tracing::error!("Process {name} failed: {err:?}");
+                                #[cfg(all(not(feature = "tracing"), feature = "log"))]
+                                ::log::error!("Process {name} failed: {err:?}");
+                                #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+                                eprintln!("Process {name} failed: {err:?}");
+
+                                // propagate shutdown to the rest of the manager
+                                init_shutdown().await;
+                            }
+                        }
+                        result
+                    })
+                    .await
+            }
+
+            let handle = self.process_handle();
+
+            let tasks = self
+                .processes
+                .iter()
+                .map(|p| wrap_proc(p.clone(), || async { handle.shutdown().await }))
+                .collect::<Vec<_>>();
+
             #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
-            eprintln!("Start process {proc_name}");
+            eprintln!("Manager {} started", self.process_name());
 
-            let proc = proc.to_owned();
-            tokio::spawn(async move { proc.process_start().await })
-                .then(|prev| async {
-                    let prev = prev.map_err(|err| RuntimeError::Internal {
-                        message: format!("tokio spawn join error: {err:?}"),
-                    })?;
-                    if prev.is_err() {
-                        #[cfg(feature = "log")]
-                        ::log::error!(
-                            "Process {proc_name} stopped unexpectedly: {:?}",
-                            prev.as_ref().unwrap_err()
-                        );
-                        #[cfg(feature = "tracing")]
-                        ::tracing::error!(
-                            "Process {proc_name} stopped unexpectedly: {:?}",
-                            prev.as_ref().unwrap_err()
-                        );
-                        #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
-                        eprintln!(
-                            "Process {proc_name} stopped unexpectedly: {:?}",
-                            prev.as_ref().unwrap_err()
-                        );
-                        init_shutdown().await;
-                    } else {
-                        #[cfg(feature = "log")]
-                        ::log::info!("Process {proc_name} stopped");
-                        #[cfg(feature = "tracing")]
-                        ::tracing::info!("Process {proc_name} stopped");
-                        #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
-                        eprintln!("Process {proc_name} stopped");
-                    }
-                    prev
-                })
-                .await
-        }
+            let result = futures::future::try_join_all(tasks).await.map(|_| ());
 
-        let handle = self.process_handle();
-        let process_futures = self
-            .processes
-            .iter()
-            .map(|proc| wrap_proc(proc.clone(), || async { handle.shutdown().await }))
-            .collect::<Vec<_>>();
+            #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+            eprintln!(
+                "Manager {} exited (error = {})",
+                self.process_name(),
+                result.is_err()
+            );
 
-        #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
-        eprintln!("Manager {} started", self.process_name());
-
-        let result = futures::future::try_join_all(process_futures)
-            .await
-            .map(|_| ());
-
-        #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
-        eprintln!(
-            "Manager {} end err={:?}",
-            self.process_name(),
-            result.is_err()
-        );
-
-        result
+            result
+        })
     }
 
     fn process_name(&self) -> String {
@@ -115,7 +123,7 @@ impl Runnable for ProcessManager {
             runtime_handles: self
                 .processes
                 .iter()
-                .map(|proc| (proc.process_name().clone(), proc.process_handle()))
+                .map(|p| (p.process_name(), p.process_handle()))
                 .collect(),
         })
     }
@@ -127,40 +135,42 @@ impl Default for ProcessManager {
     }
 }
 
+/* ------------------------------------------------------------------------
+Internal ProcessHandle
+--------------------------------------------------------------------- */
+
 struct ProcessHandle {
     runtime_handles: Vec<(String, Box<dyn ProcessControlHandler>)>,
 }
 
-#[async_trait::async_trait]
 impl ProcessControlHandler for ProcessHandle {
-    async fn shutdown(&self) {
-        // TODO make shutdowns in parallel
-        #[allow(unused_variables)]
-        for (name, runtime_handle) in self.runtime_handles.iter() {
-            #[cfg(feature = "log")]
-            ::log::info!("Initiate shutdown on process {name}");
-            #[cfg(feature = "tracing")]
-            ::tracing::info!("Initiate shutdown on process {name}");
-            #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
-            eprintln!("Initiate shutdown on process {name}");
+    fn shutdown(&self) -> CtrlFuture<'_> {
+        Box::pin(async move {
+            for (name, handle) in self.runtime_handles.iter() {
+                #[cfg(feature = "tracing")]
+                ::tracing::info!("Initiating shutdown of process {name}");
+                #[cfg(all(not(feature = "tracing"), feature = "log"))]
+                ::log::info!("Initiating shutdown of process {name}");
+                #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+                eprintln!("Initiating shutdown of process {name}");
 
-            runtime_handle.shutdown().await;
-            #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
-            eprintln!("Successfully shut down process {name}");
-        }
+                handle.shutdown().await;
+            }
+        })
     }
 
-    async fn reload(&self) {
-        // TODO make reloads in parallel
-        #[allow(unused_variables)]
-        for (name, runtime_handle) in self.runtime_handles.iter() {
-            #[cfg(feature = "log")]
-            ::log::info!("Initiate reload on process {name}");
-            #[cfg(feature = "tracing")]
-            ::tracing::info!("Initiate reload on process {name}");
-            #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
-            eprintln!("Initiate reload on process {name}");
-            runtime_handle.reload().await;
-        }
+    fn reload(&self) -> CtrlFuture<'_> {
+        Box::pin(async move {
+            for (name, handle) in self.runtime_handles.iter() {
+                #[cfg(feature = "tracing")]
+                ::tracing::info!("Initiating reload of process {name}");
+                #[cfg(all(not(feature = "tracing"), feature = "log"))]
+                ::log::info!("Initiating reload of process {name}");
+                #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+                eprintln!("Initiating reload of process {name}");
+
+                handle.reload().await;
+            }
+        })
     }
 }
