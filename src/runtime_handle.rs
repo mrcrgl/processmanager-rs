@@ -9,10 +9,10 @@ pub struct RuntimeHandle {
 }
 
 impl RuntimeHandle {
-    pub(crate) fn new(control_ch: tokio::sync::mpsc::Sender<RuntimeControlMessage>) -> Self {
-        Self {
-            control_ch: Arc::new(Mutex::new(control_ch)),
-        }
+    pub(crate) fn new(
+        control_ch: Arc<Mutex<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>,
+    ) -> Self {
+        Self { control_ch }
     }
 }
 

@@ -5,8 +5,13 @@ use tokio::sync::Mutex;
 use crate::{RuntimeControlMessage, RuntimeHandle, RuntimeTicker};
 
 pub struct RuntimeGuard {
+    inner: Arc<Inner>,
+}
+
+#[derive(Debug)]
+struct Inner {
     runtime_ticker_ch_sender: Arc<Mutex<Option<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>>,
-    control_ch_sender: tokio::sync::mpsc::Sender<RuntimeControlMessage>,
+    control_ch_sender: Arc<Mutex<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>,
 }
 
 // SAFETY: All interior mutability is protected by `tokio::sync::Mutex`, so
@@ -39,8 +44,10 @@ impl RuntimeGuard {
         });
 
         Self {
-            runtime_ticker_ch_sender: ticker_sender,
-            control_ch_sender: sender,
+            inner: Arc::new(Inner {
+                runtime_ticker_ch_sender: ticker_sender,
+                control_ch_sender: Arc::new(Mutex::new(sender)),
+            }),
         }
     }
 
@@ -51,20 +58,20 @@ impl RuntimeGuard {
             "process already started – only one ticker allowed"
         );
 
-        let mut lock = self.runtime_ticker_ch_sender.lock().await;
+        let mut lock = self.inner.runtime_ticker_ch_sender.lock().await;
         let (ticker, sender) = RuntimeTicker::new();
         lock.replace(sender);
         ticker
     }
 
     pub async fn is_running(&self) -> bool {
-        let lock = self.runtime_ticker_ch_sender.lock().await;
+        let lock = self.inner.runtime_ticker_ch_sender.lock().await;
         let closed = lock.as_ref().map(|s| s.is_closed()).unwrap_or(true);
         !closed
     }
 
     pub fn handle(&self) -> RuntimeHandle {
-        RuntimeHandle::new(self.control_ch_sender.clone())
+        RuntimeHandle::new(Arc::clone(&self.inner.control_ch_sender))
     }
 
     /// Busy-wait helper for tests / demos.

@@ -6,7 +6,10 @@ use std::pin::Pin;
 pub type ProcFuture<'a> = Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>>;
 
 /// A long-running asynchronous component managed by the `ProcessManager`.
-pub trait Runnable: Send + Sync + 'static {
+pub trait Runnable
+where
+    Self: Send + Sync + 'static,
+{
     /// Start the component. The returned future resolves when the process ends
     /// (normally or in error).
     fn process_start(&self) -> ProcFuture<'_>;
