@@ -33,6 +33,8 @@ impl ProcessManager {
 
 impl Runnable for ProcessManager {
     fn process_start(&self) -> ProcFuture<'_> {
+        let handle = self.process_handle();
+
         Box::pin(async move {
             /// Helper that spawns a process and handles its completion.
             async fn wrap_proc<F, Fut>(
@@ -85,8 +87,6 @@ impl Runnable for ProcessManager {
                     })
                     .await
             }
-
-            let handle = self.process_handle();
 
             let tasks = self
                 .processes

@@ -8,6 +8,9 @@ pub struct RuntimeTicker {
     control_ch_receiver: Arc<Mutex<tokio::sync::mpsc::Receiver<RuntimeControlMessage>>>,
 }
 
+unsafe impl Send for RuntimeTicker {}
+unsafe impl Sync for RuntimeTicker {}
+
 impl RuntimeTicker {
     pub(crate) fn new() -> (Self, tokio::sync::mpsc::Sender<RuntimeControlMessage>) {
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
