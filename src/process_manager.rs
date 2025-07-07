@@ -37,6 +37,7 @@ use std::sync::{
 };
 
 use futures::FutureExt as _;
+use once_cell::sync::OnceCell;
 use std::panic::AssertUnwindSafe;
 use tokio::sync::mpsc;
 
@@ -53,9 +54,6 @@ struct Child {
     handle: Arc<dyn ProcessControlHandler>,
 }
 
-type UnboundedChildCompletionReceiver =
-    Mutex<Option<mpsc::UnboundedReceiver<(usize, Result<(), RuntimeError>)>>>;
-
 /// Shared state between the handle you pass around, the supervisor task and all
 /// children.
 struct Inner {
@@ -65,7 +63,8 @@ struct Inner {
     active: AtomicUsize,
     // supervisor RECEIVES from here, children (spawn_child) only send
     completion_tx: mpsc::UnboundedSender<(usize, Result<(), RuntimeError>)>,
-    completion_rx: UnboundedChildCompletionReceiver,
+    completion_rx:
+        OnceCell<tokio::sync::Mutex<mpsc::UnboundedReceiver<(usize, Result<(), RuntimeError>)>>>,
 }
 
 /// Groups several [`Runnable`] instances and starts / stops them as a unit.
@@ -96,7 +95,11 @@ impl ProcessManager {
                 next_id: AtomicUsize::new(0),
                 active: AtomicUsize::new(0),
                 completion_tx: tx,
-                completion_rx: Mutex::new(Some(rx)),
+                completion_rx: {
+                    let cell = OnceCell::new();
+                    let _ = cell.set(tokio::sync::Mutex::new(rx));
+                    cell
+                },
             }),
             auto_cleanup: true,
         }
@@ -194,12 +197,11 @@ impl Runnable for ProcessManager {
             }
 
             /* -- supervisor event-loop -------------------------------------- */
-            let mut completion_rx = inner
+            let completion_rx = inner
                 .completion_rx
-                .lock()
-                .unwrap()
-                .take()
+                .get()
                 .expect("process_start called twice");
+            let mut completion_rx = completion_rx.lock().await;
 
             let mut first_error: Option<RuntimeError> = None;
 
@@ -308,10 +310,12 @@ impl ProcessControlHandler for Handle {
 /* ========================================================================== */
 
 fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) {
+    // increment *before* spawning the task – guarantees the counter is in sync
     inner.active.fetch_add(1, Ordering::SeqCst);
     let tx = inner.completion_tx.clone();
 
     tokio::spawn(async move {
+        // Task already accounted for in the caller.
         let name = proc.process_name();
 
         #[cfg(feature = "tracing")]
