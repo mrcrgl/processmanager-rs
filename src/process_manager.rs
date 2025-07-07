@@ -36,6 +36,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+use futures::FutureExt as _;
+use std::panic::AssertUnwindSafe;
 use tokio::sync::mpsc;
 
 use crate::{CtrlFuture, ProcFuture, ProcessControlHandler, Runnable, RuntimeError};
@@ -319,7 +321,23 @@ fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) {
         #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
         eprintln!("Start process {name}");
 
-        let res = proc.process_start().await;
+        // run the child and convert a panic into an `Err` so the supervisor
+        // can react instead of hanging forever.
+        let res = AssertUnwindSafe(proc.process_start())
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|panic| {
+                let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = panic.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                Err(RuntimeError::Internal {
+                    message: format!("process panicked: {msg}"),
+                })
+            });
 
         match &res {
             Ok(_) => {
