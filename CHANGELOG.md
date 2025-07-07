@@ -15,16 +15,22 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 - Architecture diagram (Mermaid) in `README.md`.
 - `Custom(Box<dyn Any>)` variant to `RuntimeControlMessage` for future
   extensibility.
+- **Fluent `ProcessManagerBuilder`** allowing compile-time safe setup and
+  configuration.
+- `.name("…")` builder method and internal plumbing for custom supervisor
+  names.
 
 ### Changed
 - `process_handle()` now returns `Arc<dyn ProcessControlHandler>` (cheap cloning,
   no double boxing).
 - Default `process_name()` no longer allocates; returns `Cow<'static, str>`.
-- `ProcessManager` constructors clarified: `new()` (auto-cleanup) and
-  `manual_cleanup()`.
+- `ProcessManager` constructors **deprecated** in favour of the new builder;
+  `new()`, `manual_cleanup()` and `auto_cleanup()` now issue warnings.
 - Busy-wait loops in `RuntimeGuard` replaced with `Notify`-based signalling.
 - Child panic handling now caught with `catch_unwind`, ensuring supervisor
   never hangs.
+- All examples, doctests and integration tests migrated to the builder API
+  (no more deprecation warnings in user-facing code).
 - Internal channels refactored to remove extra locks (use of `OnceCell`).
 
 ### Fixed

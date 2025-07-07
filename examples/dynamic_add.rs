@@ -69,8 +69,9 @@ async fn main() {
     // ------------------------------------------------------------------
     // 1. Manager with a single initial worker
     // ------------------------------------------------------------------
-    let mut mgr = ProcessManager::new();
-    mgr.insert(Worker::new(0));
+    let mgr = ProcessManagerBuilder::default()
+        .pre_insert(Worker::new(0))
+        .build();
 
     // We need to keep access to the manager after starting it, therefore
     // wrap it in an `Arc` and clone it for the spawning task.

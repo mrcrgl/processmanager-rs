@@ -69,9 +69,10 @@ async fn main() {
     // -----------------------------------------------------------
     // 1. Build a manager and register two workers
     // -----------------------------------------------------------
-    let mut manager = ProcessManager::new();
-    manager.insert(Worker::new(0));
-    manager.insert(Worker::new(1));
+    let manager = ProcessManagerBuilder::default()
+        .pre_insert(Worker::new(0))
+        .pre_insert(Worker::new(1))
+        .build();
 
     let handle = manager.process_handle();
 

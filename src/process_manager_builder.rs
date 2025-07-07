@@ -8,13 +8,15 @@
 //!
 //! Further configuration knobs (metrics, names, tracing options…) can be added
 //! here without changing the `ProcessManager` API again.
-///
 use crate::{ProcessManager, Runnable};
+///
+use std::borrow::Cow;
 
 /// Build-time configuration for a [`ProcessManager`].
 ///
 /// ```rust
 /// # use processmanager::*;
+/// # use std::sync::Arc;
 /// # #[derive(Default)] struct MySvc;
 /// # impl Runnable for MySvc {
 /// #   fn process_start(&self) -> ProcFuture<'_> { Box::pin(async { Ok(()) }) }
@@ -29,6 +31,8 @@ use crate::{ProcessManager, Runnable};
 pub struct ProcessManagerBuilder {
     /// Whether to clean up finished children automatically.
     auto_cleanup: bool,
+    /// Optional custom name for the supervisor.
+    custom_name: Option<Cow<'static, str>>,
     /// Deferred actions that will be executed against the manager right before
     /// it is returned to the caller.
     initialisers: Vec<Box<dyn FnOnce(&mut ProcessManager) + Send>>,
@@ -43,6 +47,12 @@ impl ProcessManagerBuilder {
     /// Enable / disable automatic clean-up of finished children.
     pub fn auto_cleanup(mut self, enabled: bool) -> Self {
         self.auto_cleanup = enabled;
+        self
+    }
+
+    /// Set a custom human-readable name for the supervisor.
+    pub fn name<S: Into<Cow<'static, str>>>(mut self, name: S) -> Self {
+        self.custom_name = Some(name.into());
         self
     }
 
@@ -67,6 +77,9 @@ impl ProcessManagerBuilder {
         } else {
             ProcessManager::manual_cleanup()
         };
+
+        // Apply configuration knobs that require direct field access.
+        mgr.custom_name = self.custom_name;
 
         // Run all queued initialisers (child registrations, …).
         for init in self.initialisers {

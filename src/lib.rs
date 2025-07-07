@@ -43,8 +43,9 @@
 ///          }
 ///     }
 ///
-///     let mut manager = ProcessManager::new();
-///     manager.insert(ExampleController::default());
+///     let manager = ProcessManagerBuilder::default()
+///         .pre_insert(ExampleController::default())
+///         .build();
 ///
 ///     let handle = manager.process_handle();
 ///

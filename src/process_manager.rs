@@ -23,8 +23,9 @@
 //! #         unreachable!()
 //! #     }
 //! # }
-//! let mut root = ProcessManager::new();
-//! root.insert(MyService);                   // add before start
+//! let root = ProcessManagerBuilder::default()
+//!     .pre_insert(MyService)                // add before start
+//!     .build();
 //!
 //! let handle = root.process_handle();
 //! tokio::spawn(async move { root.process_start().await.unwrap(); });
@@ -78,6 +79,8 @@ pub struct ProcessManager {
     id: usize,
     pre_start: Vec<Arc<dyn Runnable>>,
     inner: Arc<Inner>,
+    /// Optional human-readable name overriding the default `process-manager-<id>`.
+    pub(crate) custom_name: Option<Cow<'static, str>>,
     auto_cleanup: bool,
 }
 
@@ -86,6 +89,9 @@ pub struct ProcessManager {
 /* ========================================================================== */
 
 impl ProcessManager {
+    #[deprecated(
+        note = "Use `ProcessManagerBuilder::default().build()` or the fluent builder API instead"
+    )]
     /// New manager with auto-cleanup of finished children enabled.
     pub fn new() -> Self {
         let id = PID.fetch_add(1, Ordering::SeqCst);
@@ -108,10 +114,14 @@ impl ProcessManager {
                     cell
                 },
             }),
+            custom_name: None,
             auto_cleanup: true,
         }
     }
 
+    #[deprecated(
+        note = "Use `ProcessManagerBuilder::default().auto_cleanup(false).build()` instead"
+    )]
     /// Create a manager that keeps finished children (no automatic cleanup).
     ///
     /// This is the counterpart to the default [`new`] constructor which
@@ -122,6 +132,9 @@ impl ProcessManager {
         mgr
     }
 
+    #[deprecated(
+        note = "Use `ProcessManagerBuilder::default().auto_cleanup(true).build()` instead"
+    )]
     /// Create a manager with automatic cleanup of finished children (alias for [`new`]).
     pub fn auto_cleanup() -> Self {
         Self::new()
@@ -264,7 +277,11 @@ impl Runnable for ProcessManager {
     }
 
     fn process_name(&self) -> Cow<'static, str> {
-        format!("process-manager-{}", self.id).into()
+        if let Some(ref name) = self.custom_name {
+            name.clone()
+        } else {
+            format!("process-manager-{}", self.id).into()
+        }
     }
 
     fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
