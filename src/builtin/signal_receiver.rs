@@ -78,4 +78,8 @@ impl Runnable for SignalReceiver {
     fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
         self.runtime_guard.handle()
     }
+
+    fn process_name(&self) -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("SignalReceiver")
+    }
 }
