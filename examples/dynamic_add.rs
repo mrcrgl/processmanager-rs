@@ -51,6 +51,8 @@ impl Runnable for Worker {
                         println!("worker-{id}: shutting down");
                         break;
                     }
+                    // absorb any future control messages we don't explicitly handle
+                    ProcessOperation::Control(_) => continue,
                 }
             }
             Ok(())

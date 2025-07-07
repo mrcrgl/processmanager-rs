@@ -50,7 +50,7 @@ impl Runnable for SignalReceiver {
                     ProcessOperation::Next(None) => continue,
                     ProcessOperation::Next(Some(signal)) => signal,
                     ProcessOperation::Control(RuntimeControlMessage::Shutdown) => break,
-                    ProcessOperation::Control(RuntimeControlMessage::Reload) => continue,
+                    ProcessOperation::Control(_) => continue,
                 };
 
                 //      tracing::warn!("Received process signal: {signal:?}");

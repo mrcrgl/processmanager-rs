@@ -48,6 +48,8 @@ impl Runnable for ExampleController {
                     ProcessOperation::Control(RuntimeControlMessage::Reload) => {
                         println!("trigger reload {}", self.id)
                     }
+                    // absorb any future control messages we don't explicitly handle
+                    ProcessOperation::Control(_) => continue,
                 }
             }
 

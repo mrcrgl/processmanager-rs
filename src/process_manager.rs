@@ -41,7 +41,7 @@ use tokio::sync::mpsc;
 use crate::{CtrlFuture, ProcFuture, ProcessControlHandler, Runnable, RuntimeError};
 
 /// Global monotonically increasing identifier for every `ProcessManager`.
-static PID: std::sync::OnceLock<AtomicUsize> = std::sync::OnceLock::new();
+static PID: AtomicUsize = AtomicUsize::new(0);
 
 /// Metadata kept for each child.
 struct Child {
@@ -81,9 +81,7 @@ pub struct ProcessManager {
 impl ProcessManager {
     /// New manager with auto-cleanup of finished children enabled.
     pub fn new() -> Self {
-        let id = PID
-            .get_or_init(|| AtomicUsize::new(0))
-            .fetch_add(1, Ordering::SeqCst);
+        let id = PID.fetch_add(1, Ordering::SeqCst);
 
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -102,10 +100,19 @@ impl ProcessManager {
         }
     }
 
-    /// Disable / enable automatic removal of successfully finished children.
-    pub fn with_auto_cleanup(mut self, v: bool) -> Self {
-        self.auto_cleanup = v;
-        self
+    /// Create a manager that keeps finished children (no automatic cleanup).
+    ///
+    /// This is the counterpart to the default [`new`] constructor which
+    /// _removes_ children automatically once they exit successfully.
+    pub fn manual_cleanup() -> Self {
+        let mut mgr = Self::new();
+        mgr.auto_cleanup = false;
+        mgr
+    }
+
+    /// Create a manager with automatic cleanup of finished children (alias for [`new`]).
+    pub fn auto_cleanup() -> Self {
+        Self::new()
     }
 
     /// Register a child **before** the supervisor is started.

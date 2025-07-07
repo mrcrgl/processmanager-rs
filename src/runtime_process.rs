@@ -42,4 +42,6 @@ pub enum ProcessOperation<T> {
 pub enum RuntimeControlMessage {
     Reload,
     Shutdown,
+    /// User-defined messages for future extensibility.
+    Custom(Box<dyn std::any::Any + Send + Sync>),
 }
