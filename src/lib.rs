@@ -1,3 +1,4 @@
+#![deny(rustdoc::broken_intra_doc_links)]
 /// Manage multiple running services. A ProcessManager collects impl of `Runnable`
 /// and takes over the runtime management like starting, stopping (graceful or in
 /// failure) of services.

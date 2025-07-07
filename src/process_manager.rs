@@ -44,6 +44,8 @@ use futures::FutureExt as _;
 use once_cell::sync::OnceCell;
 use std::panic::AssertUnwindSafe;
 use tokio::sync::mpsc;
+
+#[cfg(feature = "tracing")]
 use tracing::Instrument;
 
 use crate::{CtrlFuture, ProcFuture, ProcessControlHandler, Runnable, RuntimeError};
@@ -59,6 +61,9 @@ struct Child {
     handle: Arc<dyn ProcessControlHandler>,
 }
 
+type ProcessCompletionChannel =
+    tokio::sync::Mutex<mpsc::UnboundedReceiver<(usize, Result<(), RuntimeError>)>>;
+
 /// Shared state between the handle you pass around, the supervisor task and all
 /// children.
 struct Inner {
@@ -71,8 +76,7 @@ struct Inner {
     active: AtomicUsize,
     // supervisor RECEIVES from here, children (spawn_child) only send
     completion_tx: mpsc::UnboundedSender<(usize, Result<(), RuntimeError>)>,
-    completion_rx:
-        OnceCell<tokio::sync::Mutex<mpsc::UnboundedReceiver<(usize, Result<(), RuntimeError>)>>>,
+    completion_rx: OnceCell<ProcessCompletionChannel>,
 }
 
 /// Groups several [`Runnable`] instances and starts / stops them as a unit.
@@ -82,7 +86,7 @@ pub struct ProcessManager {
     inner: Arc<Inner>,
     /// Optional human-readable name overriding the default `process-manager-<id>`.
     pub(crate) custom_name: Option<Cow<'static, str>>,
-    auto_cleanup: bool,
+    pub(crate) auto_cleanup: bool,
 }
 
 /* ========================================================================== */
@@ -90,9 +94,6 @@ pub struct ProcessManager {
 /* ========================================================================== */
 
 impl ProcessManager {
-    #[deprecated(
-        note = "Use `ProcessManagerBuilder::default().build()` or the fluent builder API instead"
-    )]
     /// New manager with auto-cleanup of finished children enabled.
     pub fn new() -> Self {
         let id = PID.fetch_add(1, Ordering::SeqCst);
@@ -120,27 +121,6 @@ impl ProcessManager {
         }
     }
 
-    #[deprecated(
-        note = "Use `ProcessManagerBuilder::default().auto_cleanup(false).build()` instead"
-    )]
-    /// Create a manager that keeps finished children (no automatic cleanup).
-    ///
-    /// This is the counterpart to the default [`new`] constructor which
-    /// _removes_ children automatically once they exit successfully.
-    pub fn manual_cleanup() -> Self {
-        let mut mgr = Self::new();
-        mgr.auto_cleanup = false;
-        mgr
-    }
-
-    #[deprecated(
-        note = "Use `ProcessManagerBuilder::default().auto_cleanup(true).build()` instead"
-    )]
-    /// Create a manager with automatic cleanup of finished children (alias for [`new`]).
-    pub fn auto_cleanup() -> Self {
-        Self::new()
-    }
-
     /// Register a child **before** the supervisor is started.
     ///
     /// Panics when called after [`process_start`](Runnable::process_start).
@@ -154,7 +134,7 @@ impl ProcessManager {
     }
 
     /// Add a child *while* the manager is already running. The child is spawned
-    /// immediately.  Before start-up this behaves the same as [`insert`].
+    /// immediately.  Before start-up this behaves the same as [`crate::ProcessManager::insert`].
     pub fn add(&self, process: impl Runnable) {
         let proc: Arc<dyn Runnable> = Arc::from(Box::new(process) as Box<dyn Runnable>);
 

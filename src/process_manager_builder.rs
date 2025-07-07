@@ -9,8 +9,9 @@
 //! Further configuration knobs (metrics, names, tracing options…) can be added
 //! here without changing the `ProcessManager` API again.
 use crate::{ProcessManager, Runnable};
-///
 use std::borrow::Cow;
+
+type BoxedInitializer = Box<dyn FnOnce(&mut ProcessManager) + Send>;
 
 /// Build-time configuration for a [`ProcessManager`].
 ///
@@ -35,7 +36,7 @@ pub struct ProcessManagerBuilder {
     custom_name: Option<Cow<'static, str>>,
     /// Deferred actions that will be executed against the manager right before
     /// it is returned to the caller.
-    initialisers: Vec<Box<dyn FnOnce(&mut ProcessManager) + Send>>,
+    initialisers: Vec<BoxedInitializer>,
 }
 
 impl ProcessManagerBuilder {
@@ -72,11 +73,9 @@ impl ProcessManagerBuilder {
     /// Finalise the configuration and return a ready-to-use [`ProcessManager`].
     pub fn build(self) -> ProcessManager {
         // Construct base manager according to the chosen clean-up strategy.
-        let mut mgr = if self.auto_cleanup {
-            ProcessManager::new()
-        } else {
-            ProcessManager::manual_cleanup()
-        };
+        let mut mgr = ProcessManager::new();
+
+        mgr.auto_cleanup = self.auto_cleanup;
 
         // Apply configuration knobs that require direct field access.
         mgr.custom_name = self.custom_name;
