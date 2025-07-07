@@ -1,4 +1,5 @@
 use super::RuntimeError;
+use std::borrow::Cow;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -16,8 +17,8 @@ where
     fn process_start(&self) -> ProcFuture<'_>;
 
     /// Human-readable name, used for logging only.
-    fn process_name(&self) -> String {
-        std::any::type_name::<Self>().to_string()
+    fn process_name(&self) -> Cow<'static, str> {
+        Cow::Borrowed(std::any::type_name::<Self>())
     }
 
     /// Obtain a handle for shutdown / reload signalling.

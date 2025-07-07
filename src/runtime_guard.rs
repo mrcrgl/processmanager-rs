@@ -1,114 +1,86 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
 
-use tokio::sync::{Mutex, Notify, mpsc};
+use tokio::sync::Mutex;
 
-use crate::{CtrlFuture, ProcessControlHandler, RuntimeControlMessage, RuntimeTicker};
+use crate::{ProcessControlHandler, RuntimeControlMessage, RuntimeHandle, RuntimeTicker};
 
-/// Cheap run-state guard for long-running processes.
-///
-/// A `RuntimeGuard`
-/// * acts as the fan-out hub for *reload* / *shutdown* control messages,
-/// * provides the optional [`RuntimeTicker`] helper,
-/// * offers cheap, lock-free `is_running()` checks, and
-/// * allows external code to wait for graceful shutdown without busy-loops.
+#[derive(Debug, Clone)]
 pub struct RuntimeGuard {
     inner: Arc<Inner>,
 }
 
+#[derive(Debug)]
 struct Inner {
-    /// Central control channel every [`ProcessControlHandler`] writes to.
-    control_tx: Mutex<mpsc::Sender<RuntimeControlMessage>>,
-
-    /// Filled lazily once a ticker is requested.
-    ticker_tx: Mutex<Option<mpsc::Sender<RuntimeControlMessage>>>,
-
-    /// `true` while the process **should** keep running.
-    shutdown: AtomicBool,
-
-    /// Notifies waiters when `shutdown` flips to `false`.
-    notify: Notify,
+    runtime_ticker_ch_sender: Arc<Mutex<Option<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>>,
+    control_ch_sender: Arc<Mutex<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>,
 }
 
-// SAFETY: interior mutability is protected by async primitives.
+// SAFETY: All interior mutability is protected by `tokio::sync::Mutex`, so
+// `&RuntimeGuard` can be safely shared between threads.
 unsafe impl Send for RuntimeGuard {}
 unsafe impl Sync for RuntimeGuard {}
 
 impl RuntimeGuard {
-    /// Construct a new guard in the *running* state.
     pub fn new() -> Self {
-        // central fan-in channel: ProcessControlHandler → guard task
-        let (control_tx, mut control_rx) = mpsc::channel::<RuntimeControlMessage>(1);
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
 
-        let inner = Arc::new(Inner {
-            control_tx: Mutex::new(control_tx),
-            ticker_tx: Mutex::new(None),
-            shutdown: AtomicBool::new(true),
-            notify: Notify::new(),
-        });
+        let ticker_sender: Arc<Mutex<Option<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>> =
+            Arc::new(Mutex::new(None));
 
-        // Fan-out task: forward control messages to the (single) ticker,
-        // exit automatically once `shutdown` becomes false.
-        let fanout_inner = Arc::clone(&inner);
+        let fanout_sender = Arc::clone(&ticker_sender);
+
+        // Fan-out task: forward messages from the central control channel to
+        // the (single) ticker once it has been created.
         tokio::spawn(async move {
-            while let Some(msg) = control_rx.recv().await {
-                let shutdown_requested = matches!(msg, RuntimeControlMessage::Shutdown);
-
-                // Forward to ticker if one exists
-                if let Some(ref tx) = *fanout_inner.ticker_tx.lock().await {
-                    let _ = tx.send(msg).await;
-                }
-
-                if shutdown_requested {
-                    fanout_inner.shutdown.store(false, Ordering::Release);
-                    fanout_inner.notify.notify_waiters();
-                    break; // nothing more to route
+            while let Some(msg) = receiver.recv().await {
+                let lock = fanout_sender.lock().await;
+                if let Some(ref s) = *lock {
+                    if s.send(msg).await.is_err() {
+                        break; // ticker dropped
+                    }
+                } else {
+                    ::tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
             }
         });
 
-        Self { inner }
+        Self {
+            inner: Arc::new(Inner {
+                runtime_ticker_ch_sender: ticker_sender,
+                control_ch_sender: Arc::new(Mutex::new(sender)),
+            }),
+        }
     }
 
-    /// Create a `RuntimeTicker` for the caller and connect it to the fan-out.
-    ///
-    /// Panics if invoked more than once.
+    /// Create a ticker for the caller and connect it to the control fan-out.
     pub async fn runtime_ticker(&self) -> RuntimeTicker {
         assert!(
-            self.is_running(),
-            "process already shut down – ticker no longer available"
+            !self.is_running().await,
+            "process already started – only one ticker allowed"
         );
 
-        let mut lock = self.inner.ticker_tx.lock().await;
-        assert!(lock.is_none(), "only one ticker allowed");
-
-        let ticker = RuntimeTicker::new();
-        *lock = Some(ticker.sender());
+        let mut lock = self.inner.runtime_ticker_ch_sender.lock().await;
+        let (ticker, sender) = RuntimeTicker::new();
+        lock.replace(sender);
         ticker
     }
 
-    /// Returns `false` once a graceful shutdown has been requested.
-    #[inline]
-    pub fn is_running(&self) -> bool {
-        self.inner.shutdown.load(Ordering::Acquire)
+    pub async fn is_running(&self) -> bool {
+        let lock = self.inner.runtime_ticker_ch_sender.lock().await;
+        let closed = lock.as_ref().map(|s| s.is_closed()).unwrap_or(true);
+        !closed
     }
 
-    /// Non-blocking handle creation (cheap `Arc` clone).
     pub fn handle(&self) -> Arc<dyn ProcessControlHandler> {
-        Arc::new(Handle {
-            inner: Arc::clone(&self.inner),
-        })
+        Arc::new(RuntimeHandle::new(Arc::clone(
+            &self.inner.control_ch_sender,
+        )))
     }
 
-    /// Wait until `shutdown` is observed.
-    ///
-    /// Useful in demos & tests; production code typically awaits the main
-    /// process future instead.
+    /// Busy-wait helper for tests / demos.
     pub async fn block_until_shutdown(&self) {
-        if self.is_running() {
-            self.inner.notify.notified().await;
+        while self.is_running().await {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
 }
@@ -116,37 +88,5 @@ impl RuntimeGuard {
 impl Default for RuntimeGuard {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/* ========================================================================= */
-/* ProcessControlHandler implementation                                      */
-/* ========================================================================= */
-
-struct Handle {
-    inner: Arc<Inner>,
-}
-
-impl ProcessControlHandler for Handle {
-    fn shutdown(&self) -> CtrlFuture<'_> {
-        let inner = Arc::clone(&self.inner);
-        Box::pin(async move {
-            {
-                let tx = inner.control_tx.lock().await;
-                // ignore errors – receiver might have gone already
-                let _ = tx.send(RuntimeControlMessage::Shutdown).await;
-            }
-            // ensure flag flips even if fan-out task is gone
-            inner.shutdown.store(false, Ordering::Release);
-            inner.notify.notify_waiters();
-        })
-    }
-
-    fn reload(&self) -> CtrlFuture<'_> {
-        let inner = Arc::clone(&self.inner);
-        Box::pin(async move {
-            let tx = inner.control_tx.lock().await;
-            let _ = tx.send(RuntimeControlMessage::Reload).await;
-        })
     }
 }

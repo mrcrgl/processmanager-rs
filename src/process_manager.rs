@@ -31,9 +31,12 @@
 //!
 //! handle.reload().await;                    // control a running manager
 //! ```
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+use std::{
+    borrow::Cow,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
 
 use futures::FutureExt as _;
@@ -244,8 +247,8 @@ impl Runnable for ProcessManager {
         })
     }
 
-    fn process_name(&self) -> String {
-        format!("process-manager-{}", self.id)
+    fn process_name(&self) -> Cow<'static, str> {
+        format!("process-manager-{}", self.id).into()
     }
 
     fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
