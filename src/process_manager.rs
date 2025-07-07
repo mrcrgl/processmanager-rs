@@ -61,6 +61,9 @@ struct Child {
 /// children.
 struct Inner {
     processes: Mutex<Vec<Child>>,
+    /// Cached list of `ProcessControlHandler`s for fast broadcast without
+    /// temporary allocations.
+    handles: Mutex<Vec<Arc<dyn ProcessControlHandler>>>,
     running: AtomicBool,
     next_id: AtomicUsize,
     active: AtomicUsize,
@@ -94,6 +97,7 @@ impl ProcessManager {
             pre_start: Vec::new(),
             inner: Arc::new(Inner {
                 processes: Mutex::new(Vec::new()),
+                handles: Mutex::new(Vec::new()),
                 running: AtomicBool::new(false),
                 next_id: AtomicUsize::new(0),
                 active: AtomicUsize::new(0),
@@ -143,17 +147,22 @@ impl ProcessManager {
         // Not running yet? → queue for start-up.
         if !self.inner.running.load(Ordering::SeqCst) {
             let mut guard = self.inner.processes.lock().unwrap();
+            let handle = proc.process_handle();
             guard.push(Child {
                 id: self.inner.next_id.fetch_add(1, Ordering::SeqCst),
-                handle: proc.process_handle(),
+                handle: Arc::clone(&handle),
                 proc,
             });
+            // cache for broadcasts
+            self.inner.handles.lock().unwrap().push(handle);
             return;
         }
 
         // Running → register & spawn immediately.
         let id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
         let handle = proc.process_handle();
+        // cache handle immediately
+        self.inner.handles.lock().unwrap().push(Arc::clone(&handle));
 
         {
             let mut guard = self.inner.processes.lock().unwrap();
@@ -193,8 +202,9 @@ impl Runnable for ProcessManager {
                     g.push(Child {
                         id,
                         proc: Arc::clone(&proc),
-                        handle,
+                        handle: Arc::clone(&handle),
                     });
+                    inner.handles.lock().unwrap().push(handle);
                 }
                 spawn_child(id, proc, Arc::clone(&inner));
             }
@@ -225,6 +235,12 @@ impl Runnable for ProcessManager {
                                 if auto_cleanup {
                                     let mut g = inner.processes.lock().unwrap();
                                     g.retain(|c| c.id != cid);
+                                    // also remove cached handle
+                                    inner
+                                        .handles
+                                        .lock()
+                                        .unwrap()
+                                        .retain(|h| g.iter().any(|c| Arc::ptr_eq(&c.handle, h)));
                                 }
                             }
                             Err(err) => {
@@ -277,11 +293,8 @@ impl ProcessControlHandler for Handle {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             let handles = {
-                let guard = inner.processes.lock().unwrap();
-                guard
-                    .iter()
-                    .map(|c| Arc::clone(&c.handle))
-                    .collect::<Vec<_>>()
+                let guard = inner.handles.lock().unwrap();
+                guard.clone()
             };
 
             for h in handles {
@@ -294,11 +307,8 @@ impl ProcessControlHandler for Handle {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             let handles = {
-                let guard = inner.processes.lock().unwrap();
-                guard
-                    .iter()
-                    .map(|c| Arc::clone(&c.handle))
-                    .collect::<Vec<_>>()
+                let guard = inner.handles.lock().unwrap();
+                guard.clone()
             };
 
             for h in handles {
