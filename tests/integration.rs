@@ -3,6 +3,7 @@ use processmanager::{
     RuntimeControlMessage, RuntimeError, RuntimeGuard,
 };
 use std::ops::Add;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot::channel;
 use tokio::time::timeout;
@@ -54,8 +55,8 @@ impl Runnable for ExampleController {
         })
     }
 
-    fn process_handle(&self) -> Box<dyn ProcessControlHandler> {
-        Box::new(self.runtime_guard.handle())
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        self.runtime_guard.handle()
     }
 }
 

@@ -1,6 +1,7 @@
 use super::RuntimeError;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 /// Boxed future returned by [`Runnable::process_start`].
 pub type ProcFuture<'a> = Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>>;
@@ -20,7 +21,7 @@ where
     }
 
     /// Obtain a handle for shutdown / reload signalling.
-    fn process_handle(&self) -> Box<dyn ProcessControlHandler>;
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler>;
 }
 
 /// Boxed future returned by [`ProcessControlHandler`] control methods.

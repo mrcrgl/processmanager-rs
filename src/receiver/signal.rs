@@ -6,6 +6,7 @@ use futures::stream::StreamExt as _;
 use signal_hook::consts::signal::*;
 use signal_hook::iterator::Handle;
 use signal_hook_tokio::{Signals, SignalsInfo};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 pub struct SignalReceiver {
@@ -74,7 +75,7 @@ impl Runnable for SignalReceiver {
         })
     }
 
-    fn process_handle(&self) -> Box<dyn ProcessControlHandler> {
-        Box::new(self.runtime_guard.handle())
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        self.runtime_guard.handle()
     }
 }

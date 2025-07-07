@@ -19,7 +19,7 @@
 //! # #[derive(Default)] struct MyService;
 //! # impl Runnable for MyService {
 //! #     fn process_start(&self) -> ProcFuture<'_> { Box::pin(async { Ok(()) }) }
-//! #     fn process_handle(&self) -> Box<dyn ProcessControlHandler> {
+//! #     fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
 //! #         unreachable!()
 //! #     }
 //! # }
@@ -47,7 +47,7 @@ static PID: std::sync::OnceLock<AtomicUsize> = std::sync::OnceLock::new();
 struct Child {
     id: usize,
     #[allow(dead_code)]
-    proc: Arc<Box<dyn Runnable>>,
+    proc: Arc<dyn Runnable>,
     handle: Arc<dyn ProcessControlHandler>,
 }
 
@@ -69,7 +69,7 @@ struct Inner {
 /// Groups several [`Runnable`] instances and starts / stops them as a unit.
 pub struct ProcessManager {
     id: usize,
-    pre_start: Vec<Arc<Box<dyn Runnable>>>,
+    pre_start: Vec<Arc<dyn Runnable>>,
     inner: Arc<Inner>,
     auto_cleanup: bool,
 }
@@ -117,20 +117,20 @@ impl ProcessManager {
             "cannot call insert() after manager has started – use add() instead"
         );
         self.pre_start
-            .push(Arc::new(Box::new(process) as Box<dyn Runnable>));
+            .push(Arc::from(Box::new(process) as Box<dyn Runnable>));
     }
 
     /// Add a child *while* the manager is already running. The child is spawned
     /// immediately.  Before start-up this behaves the same as [`insert`].
     pub fn add(&self, process: impl Runnable) {
-        let proc: Arc<Box<dyn Runnable>> = Arc::new(Box::new(process) as Box<dyn Runnable>);
+        let proc: Arc<dyn Runnable> = Arc::from(Box::new(process) as Box<dyn Runnable>);
 
         // Not running yet? → queue for start-up.
         if !self.inner.running.load(Ordering::SeqCst) {
             let mut guard = self.inner.processes.lock().unwrap();
             guard.push(Child {
                 id: self.inner.next_id.fetch_add(1, Ordering::SeqCst),
-                handle: Arc::from(proc.process_handle()),
+                handle: proc.process_handle(),
                 proc,
             });
             return;
@@ -138,7 +138,7 @@ impl ProcessManager {
 
         // Running → register & spawn immediately.
         let id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
-        let handle = Arc::from(proc.process_handle());
+        let handle = proc.process_handle();
 
         {
             let mut guard = self.inner.processes.lock().unwrap();
@@ -171,7 +171,7 @@ impl Runnable for ProcessManager {
             /* -- spawn every child registered before start() ---------------- */
             for proc in initial {
                 let id = inner.next_id.fetch_add(1, Ordering::SeqCst);
-                let handle = Arc::from(proc.process_handle());
+                let handle = proc.process_handle();
 
                 {
                     let mut g = inner.processes.lock().unwrap();
@@ -237,8 +237,8 @@ impl Runnable for ProcessManager {
         format!("process-manager-{}", self.id)
     }
 
-    fn process_handle(&self) -> Box<dyn ProcessControlHandler> {
-        Box::new(Handle {
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        Arc::new(Handle {
             inner: Arc::clone(&self.inner),
         })
     }
@@ -298,7 +298,7 @@ impl ProcessControlHandler for Handle {
 /*  Helper – spawn a single child                                             */
 /* ========================================================================== */
 
-fn spawn_child(id: usize, proc: Arc<Box<dyn Runnable>>, inner: Arc<Inner>) {
+fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) {
     inner.active.fetch_add(1, Ordering::SeqCst);
     let tx = inner.completion_tx.clone();
 

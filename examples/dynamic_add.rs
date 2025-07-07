@@ -57,8 +57,8 @@ impl Runnable for Worker {
         })
     }
 
-    fn process_handle(&self) -> Box<dyn ProcessControlHandler> {
-        Box::new(self.guard.handle())
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        self.guard.handle()
     }
 }
 

@@ -4,6 +4,7 @@
 ///
 /// ```rust
 /// use processmanager::*;
+/// use std::sync::Arc;
 ///
 /// #[tokio::main]
 /// async fn main() {
@@ -36,8 +37,8 @@
 ///             })
 ///         }
 ///
-///         fn process_handle(&self) -> Box<dyn ProcessControlHandler> {
-///             Box::new(self.runtime_guard.handle())
+///         fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+///             self.runtime_guard.handle()
 ///          }
 ///     }
 ///
