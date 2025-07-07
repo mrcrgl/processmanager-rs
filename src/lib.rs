@@ -60,6 +60,7 @@
 ///
 mod error;
 mod process_manager;
+mod process_manager_builder;
 #[cfg(feature = "signal")]
 pub mod receiver;
 mod runtime_guard;
@@ -68,6 +69,7 @@ mod runtime_process;
 mod runtime_ticker;
 pub use error::*;
 pub use process_manager::*;
+pub use process_manager_builder::*;
 pub use runtime_guard::*;
 pub use runtime_handle::*;
 pub use runtime_process::*;
