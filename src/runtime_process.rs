@@ -45,3 +45,15 @@ pub enum RuntimeControlMessage {
     /// User-defined messages for future extensibility.
     Custom(Box<dyn std::any::Any + Send + Sync>),
 }
+
+impl Clone for RuntimeControlMessage {
+    fn clone(&self) -> Self {
+        match self {
+            RuntimeControlMessage::Reload => RuntimeControlMessage::Reload,
+            RuntimeControlMessage::Shutdown => RuntimeControlMessage::Shutdown,
+            RuntimeControlMessage::Custom(_) => {
+                panic!("Cloning `Custom` control messages is not supported")
+            }
+        }
+    }
+}
