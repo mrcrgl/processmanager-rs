@@ -70,4 +70,8 @@ where
     fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
         R::process_handle(self)
     }
+
+    fn process_name(&self) -> Cow<'static, str> {
+        R::process_name(self)
+    }
 }

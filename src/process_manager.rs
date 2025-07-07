@@ -38,12 +38,17 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use futures::FutureExt as _;
 use once_cell::sync::OnceCell;
 use std::panic::AssertUnwindSafe;
-use tokio::sync::mpsc;
+use tokio::{
+    sync::mpsc,
+    task::{JoinHandle, JoinSet},
+    time::Instant,
+};
 
 #[cfg(feature = "tracing")]
 use tracing::Instrument;
@@ -59,6 +64,7 @@ struct Child {
     #[allow(dead_code)]
     proc: Arc<dyn Runnable>,
     handle: Arc<dyn ProcessControlHandler>,
+    join_handle: Arc<JoinHandle<()>>,
 }
 
 type ProcessCompletionChannel =
@@ -138,19 +144,10 @@ impl ProcessManager {
     pub fn add(&self, process: impl Runnable) {
         let proc: Arc<dyn Runnable> = Arc::from(Box::new(process) as Box<dyn Runnable>);
 
-        // Not running yet? → queue for start-up.
-        if !self.inner.running.load(Ordering::SeqCst) {
-            let mut guard = self.inner.processes.lock().unwrap();
-            let handle = proc.process_handle();
-            guard.push(Child {
-                id: self.inner.next_id.fetch_add(1, Ordering::SeqCst),
-                handle: Arc::clone(&handle),
-                proc,
-            });
-            // cache for broadcasts
-            self.inner.handles.lock().unwrap().push(handle);
-            return;
-        }
+        assert!(
+            self.inner.running.load(Ordering::SeqCst),
+            "cannot call add() before manager has started – use insert() instead"
+        );
 
         // Running → register & spawn immediately.
         let id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
@@ -164,10 +161,9 @@ impl ProcessManager {
                 id,
                 proc: Arc::clone(&proc),
                 handle,
+                join_handle: Arc::new(spawn_child(id, proc, Arc::clone(&self.inner))),
             });
         }
-
-        spawn_child(id, proc, Arc::clone(&self.inner));
     }
 }
 
@@ -186,6 +182,15 @@ impl Runnable for ProcessManager {
         Box::pin(async move {
             inner.running.store(true, Ordering::SeqCst);
 
+            let name = self.process_name();
+
+            #[cfg(feature = "tracing")]
+            ::tracing::info!("Start process manager {name}");
+            #[cfg(all(not(feature = "tracing"), feature = "log"))]
+            ::log::info!("Start process manager {name}");
+            #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+            eprintln!("Start process manager {name}");
+
             /* -- spawn every child registered before start() ---------------- */
             for proc in initial {
                 let id = inner.next_id.fetch_add(1, Ordering::SeqCst);
@@ -197,10 +202,10 @@ impl Runnable for ProcessManager {
                         id,
                         proc: Arc::clone(&proc),
                         handle: Arc::clone(&handle),
+                        join_handle: Arc::new(spawn_child(id, proc, Arc::clone(&inner))),
                     });
                     inner.handles.lock().unwrap().push(handle);
                 }
-                spawn_child(id, proc, Arc::clone(&inner));
             }
 
             /* -- supervisor event-loop -------------------------------------- */
@@ -213,13 +218,21 @@ impl Runnable for ProcessManager {
             let mut first_error: Option<RuntimeError> = None;
 
             loop {
+                #[cfg(feature = "tracing")]
+                {
+                    for child in self.inner.processes.lock().unwrap().iter() {
+                        ::tracing::info!(
+                            "Process {}: running={:?}",
+                            child.proc.process_name(),
+                            !child.join_handle.is_finished()
+                        );
+                    }
+                }
+
                 // exit criterion: no active children left
                 if inner.active.load(Ordering::SeqCst) == 0 {
                     inner.running.store(false, Ordering::SeqCst);
-                    return match first_error {
-                        Some(e) => Err(e),
-                        None => Ok(()),
-                    };
+                    break;
                 }
 
                 match completion_rx.recv().await {
@@ -252,6 +265,27 @@ impl Runnable for ProcessManager {
                             message: "completion channel closed unexpectedly".into(),
                         });
                     }
+                }
+            }
+
+            match first_error {
+                Some(error) => {
+                    #[cfg(feature = "tracing")]
+                    ::tracing::info!("Shutdown process manager {name} with error: {error:?}");
+                    #[cfg(all(not(feature = "tracing"), feature = "log"))]
+                    ::log::info!("Shutdown process manager {name} with error: {error:?}");
+                    #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+                    eprintln!("Shutdown process manager {name} with error: {error:?}");
+                    Err(error)
+                }
+                None => {
+                    #[cfg(feature = "tracing")]
+                    ::tracing::info!("Shutdown process manager {name}");
+                    #[cfg(all(not(feature = "tracing"), feature = "log"))]
+                    ::log::info!("Shutdown process manager {name}");
+                    #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+                    eprintln!("Shutdown process manager {name}");
+                    Ok(())
                 }
             }
         })
@@ -290,14 +324,60 @@ impl ProcessControlHandler for Handle {
     fn shutdown(&self) -> CtrlFuture<'_> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
+            let mut set = JoinSet::new();
+
             let handles = {
-                let guard = inner.handles.lock().unwrap();
-                guard.clone()
+                let guard = inner.processes.lock().unwrap();
+                guard
+                    .iter()
+                    .map(|child| {
+                        (
+                            child.proc.process_name(),
+                            child.handle.clone(),
+                            child.join_handle.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
             };
 
-            for h in handles {
-                h.shutdown().await;
+            for (name, h, jh) in handles {
+                set.spawn(async move {
+                    #[cfg(feature = "tracing")]
+                    ::tracing::info!(name = %name, "Initiate shutdown");
+                    #[cfg(all(not(feature = "tracing"), feature = "log"))]
+                    ::log::info!("Initiate shutdown {name}");
+                    #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+                    eprintln!("Initiate shutdown {name}");
+
+                    let dur = Duration::from_secs(30);
+                    let now = Instant::now();
+                    let timeout = tokio::time::timeout(dur, h.shutdown()).await;
+                    let elapsed = now.elapsed();
+
+                    match timeout {
+                        Ok(_) => {
+                            // Shutdown ok
+                            #[cfg(feature = "tracing")]
+                            ::tracing::info!(name = %name, elapsed = ?elapsed, "Shutdown completed");
+                            #[cfg(all(not(feature = "tracing"), feature = "log"))]
+                            ::log::info!("Process {name}: shutdown completed");
+                            #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+                            eprintln!("Process {name}: shutdown completed");
+                        }
+                        Err(_) => {
+                            jh.abort();
+                            // Timed out.
+                            #[cfg(feature = "tracing")]
+                            ::tracing::info!(name = %name, elapsed = ?elapsed, "Shutdown timed out");
+                            #[cfg(all(not(feature = "tracing"), feature = "log"))]
+                            ::log::info!("Process {name}: Shutdown timed out after {dur:?}");
+                            #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+                            eprintln!("Process {name}: Shutdown timed out after {dur:?}");
+                        }
+                    }
+                });
             }
+            let _ = set.join_all().await;
         })
     }
 
@@ -320,7 +400,7 @@ impl ProcessControlHandler for Handle {
 /*  Helper – spawn a single child                                             */
 /* ========================================================================== */
 
-fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) {
+fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) -> JoinHandle<()> {
     // increment *before* spawning the task – guarantees the counter is in sync
     inner.active.fetch_add(1, Ordering::SeqCst);
     let tx = inner.completion_tx.clone();
@@ -329,7 +409,7 @@ fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) {
         // Task already accounted for in the caller.
         let name = proc.process_name();
         #[cfg(feature = "tracing")]
-        ::tracing::info!("Start process {name}");
+        ::tracing::info!(name = %name, "Start process");
         #[cfg(all(not(feature = "tracing"), feature = "log"))]
         ::log::info!("Start process {name}");
         #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
@@ -363,22 +443,22 @@ fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) {
         match &res {
             Ok(_) => {
                 #[cfg(feature = "tracing")]
-                ::tracing::info!("Process {name} stopped");
+                ::tracing::info!(name = %name, "Process stopped");
                 #[cfg(all(not(feature = "tracing"), feature = "log"))]
-                ::log::info!("Process {name} stopped");
+                ::log::info!("Process {name}: stopped");
                 #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
-                eprintln!("Process {name} stopped");
+                eprintln!("Process {name}: stopped");
             }
             Err(err) => {
                 #[cfg(feature = "tracing")]
-                ::tracing::error!("Process {name} failed: {err:?}");
+                ::tracing::error!(name = %name, "Process failed: {err:?}");
                 #[cfg(all(not(feature = "tracing"), feature = "log"))]
-                ::log::error!("Process {name} failed: {err:?}");
+                ::log::error!("Process {name}: failed {err:?}");
                 #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
-                eprintln!("Process {name} failed: {err:?}");
+                eprintln!("Process {name}: failed {err:?}");
             }
         }
 
         let _ = tx.send((id, res)); // ignore error if supervisor already gone
-    });
+    })
 }
