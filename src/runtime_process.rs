@@ -61,7 +61,7 @@ impl Clone for RuntimeControlMessage {
 
 impl<R> Runnable for Arc<R>
 where
-    R: Runnable,
+    R: Runnable + ?Sized,
 {
     fn process_start(&self) -> ProcFuture<'_> {
         R::process_start(self)

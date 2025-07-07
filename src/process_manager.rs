@@ -44,6 +44,7 @@ use futures::FutureExt as _;
 use once_cell::sync::OnceCell;
 use std::panic::AssertUnwindSafe;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use crate::{CtrlFuture, ProcFuture, ProcessControlHandler, Runnable, RuntimeError};
 
@@ -348,9 +349,6 @@ fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) {
         // Task already accounted for in the caller.
         let name = proc.process_name();
         #[cfg(feature = "tracing")]
-        let _span_enter = ::tracing::info_span!("process", name = %name).entered();
-
-        #[cfg(feature = "tracing")]
         ::tracing::info!("Start process {name}");
         #[cfg(all(not(feature = "tracing"), feature = "log"))]
         ::log::info!("Start process {name}");
@@ -359,21 +357,28 @@ fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) {
 
         // run the child and convert a panic into an `Err` so the supervisor
         // can react instead of hanging forever.
-        let res = AssertUnwindSafe(proc.process_start())
-            .catch_unwind()
-            .await
-            .unwrap_or_else(|panic| {
-                let msg = if let Some(s) = panic.downcast_ref::<&str>() {
-                    (*s).to_string()
-                } else if let Some(s) = panic.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "unknown panic".to_string()
-                };
-                Err(RuntimeError::Internal {
-                    message: format!("process panicked: {msg}"),
-                })
-            });
+        let catch_fut = AssertUnwindSafe(proc.process_start()).catch_unwind();
+
+        #[cfg(feature = "tracing")]
+        let catch_result = {
+            let span = ::tracing::info_span!("process", name = %name);
+            catch_fut.instrument(span).await
+        };
+        #[cfg(not(feature = "tracing"))]
+        let catch_result = { catch_fut.await };
+
+        let res = catch_result.unwrap_or_else(|panic| {
+            let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = panic.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            Err(RuntimeError::Internal {
+                message: format!("process panicked: {msg}"),
+            })
+        });
 
         match &res {
             Ok(_) => {
