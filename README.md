@@ -10,6 +10,7 @@ If one service fails, the manager initiates  a graceful shutdown for all other.
 
 ```rust
 use processmanager::*;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
@@ -22,17 +23,23 @@ async fn main() {
     impl Runnable for ExampleController {
         fn process_start(&self) -> ProcFuture<'_> {
             Box::pin(async {
-                // This can be any type of future like an async streams
+                // Emit a heartbeat every second
                 let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+                // Create a ticker that also listens for shutdown / reload signals
+                let ticker = self.runtime_guard.runtime_ticker().await;
 
                 loop {
-                    match self.runtime_guard.tick(interval.tick()).await {
+                    match ticker.tick(interval.tick()).await {
                         ProcessOperation::Next(_) => println!("work"),
                         ProcessOperation::Control(RuntimeControlMessage::Shutdown) => {
                             println!("shutdown");
-                            break
+                            break;
                         },
-                        ProcessOperation::Control(RuntimeControlMessage::Reload) => println!("trigger relead"),
+                        ProcessOperation::Control(RuntimeControlMessage::Reload) => {
+                            println!("trigger reload");
+                        },
+                        // ignore any future control messages we don't care about
+                        ProcessOperation::Control(_) => continue,
                     }
                 }
 
@@ -40,9 +47,9 @@ async fn main() {
             })
         }
 
-        fn process_handle(&self) -> Box<dyn ProcessControlHandler> {
-            Box::new(self.runtime_guard.handle())
-         }
+        fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+            self.runtime_guard.handle()
+        }
     }
 
     let mut manager = ProcessManager::new();
@@ -59,4 +66,17 @@ async fn main() {
     handle.shutdown().await;
 }
 
+```
+# Architecture (high-level)
+
+```mermaid
+flowchart TD
+    subgraph Supervisor
+        Mgr(ProcessManager)
+    end
+    Mgr -->|spawn| Child1[Runnable #1]
+    Mgr --> Child2[Runnable #2]
+    Child1 -- control --> Mgr
+    Child2 -- control --> Mgr
+    ExtHandle(External&nbsp;Handle) -- shutdown / reload --> Mgr
 ```
