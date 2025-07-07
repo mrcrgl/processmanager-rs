@@ -58,3 +58,16 @@ impl Clone for RuntimeControlMessage {
         }
     }
 }
+
+impl<R> Runnable for Arc<R>
+where
+    R: Runnable,
+{
+    fn process_start(&self) -> ProcFuture<'_> {
+        R::process_start(self)
+    }
+
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        R::process_handle(self)
+    }
+}
