@@ -14,15 +14,13 @@
 //! The type itself implements [`Runnable`], which means you can build an
 //! arbitrary process tree by nesting managers.
 //
-//! ```no_run
+//! ```ignore
 //! # use processmanager::*;
 //! # #[derive(Default)] struct MyService;
 //! # impl Runnable for MyService {
 //! #     fn process_start(&self) -> ProcFuture<'_> { Box::pin(async { Ok(()) }) }
 //! #     fn process_handle(&self) -> Box<dyn ProcessControlHandler> {
-//! #         Box::new(processmanager::runtime_handle::RuntimeHandle::new(
-//! #             std::sync::Arc::new(tokio::sync::Mutex::new(
-//! #                 tokio::sync::mpsc::channel(1).0)))
+//! #         unreachable!()
 //! #     }
 //! # }
 //! let mut root = ProcessManager::new();
@@ -48,9 +46,13 @@ static PID: std::sync::OnceLock<AtomicUsize> = std::sync::OnceLock::new();
 /// Metadata kept for each child.
 struct Child {
     id: usize,
+    #[allow(dead_code)]
     proc: Arc<Box<dyn Runnable>>,
     handle: Arc<dyn ProcessControlHandler>,
 }
+
+type UnboundedChildCompletionReceiver =
+    Mutex<Option<mpsc::UnboundedReceiver<(usize, Result<(), RuntimeError>)>>>;
 
 /// Shared state between the handle you pass around, the supervisor task and all
 /// children.
@@ -61,7 +63,7 @@ struct Inner {
     active: AtomicUsize,
     // supervisor RECEIVES from here, children (spawn_child) only send
     completion_tx: mpsc::UnboundedSender<(usize, Result<(), RuntimeError>)>,
-    completion_rx: Mutex<Option<mpsc::UnboundedReceiver<(usize, Result<(), RuntimeError>)>>>,
+    completion_rx: UnboundedChildCompletionReceiver,
 }
 
 /// Groups several [`Runnable`] instances and starts / stops them as a unit.

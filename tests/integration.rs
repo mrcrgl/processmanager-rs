@@ -276,7 +276,7 @@ async fn test_nested_process_runnable_multiple_one_exits_1() {
 
     assert!(
         timeout(Duration::from_secs(5), rx).await.is_err(),
-        "expectd time out"
+        "expected time out"
     );
 }
 
