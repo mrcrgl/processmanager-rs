@@ -330,6 +330,8 @@ fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) {
     tokio::spawn(async move {
         // Task already accounted for in the caller.
         let name = proc.process_name();
+        #[cfg(feature = "tracing")]
+        let _span_enter = ::tracing::info_span!("process", name = %name).entered();
 
         #[cfg(feature = "tracing")]
         ::tracing::info!("Start process {name}");
