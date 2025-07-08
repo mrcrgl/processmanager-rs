@@ -4,6 +4,7 @@ use tokio::sync::Mutex;
 
 use crate::{CtrlFuture, ProcessControlHandler, RuntimeControlMessage};
 
+#[derive(Debug, Clone)]
 pub struct RuntimeHandle {
     control_ch: Arc<Mutex<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>,
 }

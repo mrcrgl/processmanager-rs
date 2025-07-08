@@ -19,59 +19,80 @@
 //! # #[derive(Default)] struct MyService;
 //! # impl Runnable for MyService {
 //! #     fn process_start(&self) -> ProcFuture<'_> { Box::pin(async { Ok(()) }) }
-//! #     fn process_handle(&self) -> Box<dyn ProcessControlHandler> {
+//! #     fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
 //! #         unreachable!()
 //! #     }
 //! # }
-//! let mut root = ProcessManager::new();
-//! root.insert(MyService);                   // add before start
+//! let root = ProcessManagerBuilder::default()
+//!     .pre_insert(MyService)                // add before start
+//!     .build();
 //!
 //! let handle = root.process_handle();
 //! tokio::spawn(async move { root.process_start().await.unwrap(); });
 //!
 //! handle.reload().await;                    // control a running manager
 //! ```
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+use std::{
+    borrow::Cow,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::Duration,
 };
 
-use tokio::sync::mpsc;
+use futures::FutureExt as _;
+use once_cell::sync::OnceCell;
+use std::panic::AssertUnwindSafe;
+use tokio::{
+    sync::mpsc,
+    task::{JoinHandle, JoinSet},
+    time::Instant,
+};
+
+#[cfg(feature = "tracing")]
+use tracing::Instrument;
 
 use crate::{CtrlFuture, ProcFuture, ProcessControlHandler, Runnable, RuntimeError};
 
 /// Global monotonically increasing identifier for every `ProcessManager`.
-static PID: std::sync::OnceLock<AtomicUsize> = std::sync::OnceLock::new();
+static PID: AtomicUsize = AtomicUsize::new(0);
 
 /// Metadata kept for each child.
 struct Child {
     id: usize,
     #[allow(dead_code)]
-    proc: Arc<Box<dyn Runnable>>,
+    proc: Arc<dyn Runnable>,
     handle: Arc<dyn ProcessControlHandler>,
+    join_handle: Arc<JoinHandle<()>>,
 }
 
-type UnboundedChildCompletionReceiver =
-    Mutex<Option<mpsc::UnboundedReceiver<(usize, Result<(), RuntimeError>)>>>;
+type ProcessCompletionChannel =
+    tokio::sync::Mutex<mpsc::UnboundedReceiver<(usize, Result<(), RuntimeError>)>>;
 
 /// Shared state between the handle you pass around, the supervisor task and all
 /// children.
 struct Inner {
     processes: Mutex<Vec<Child>>,
+    /// Cached list of `ProcessControlHandler`s for fast broadcast without
+    /// temporary allocations.
+    handles: Mutex<Vec<Arc<dyn ProcessControlHandler>>>,
     running: AtomicBool,
     next_id: AtomicUsize,
     active: AtomicUsize,
     // supervisor RECEIVES from here, children (spawn_child) only send
     completion_tx: mpsc::UnboundedSender<(usize, Result<(), RuntimeError>)>,
-    completion_rx: UnboundedChildCompletionReceiver,
+    completion_rx: OnceCell<ProcessCompletionChannel>,
 }
 
 /// Groups several [`Runnable`] instances and starts / stops them as a unit.
 pub struct ProcessManager {
     id: usize,
-    pre_start: Vec<Arc<Box<dyn Runnable>>>,
+    pre_start: Vec<Arc<dyn Runnable>>,
     inner: Arc<Inner>,
-    auto_cleanup: bool,
+    /// Optional human-readable name overriding the default `process-manager-<id>`.
+    pub(crate) custom_name: Option<Cow<'static, str>>,
+    pub(crate) auto_cleanup: bool,
 }
 
 /* ========================================================================== */
@@ -81,9 +102,7 @@ pub struct ProcessManager {
 impl ProcessManager {
     /// New manager with auto-cleanup of finished children enabled.
     pub fn new() -> Self {
-        let id = PID
-            .get_or_init(|| AtomicUsize::new(0))
-            .fetch_add(1, Ordering::SeqCst);
+        let id = PID.fetch_add(1, Ordering::SeqCst);
 
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -92,20 +111,20 @@ impl ProcessManager {
             pre_start: Vec::new(),
             inner: Arc::new(Inner {
                 processes: Mutex::new(Vec::new()),
+                handles: Mutex::new(Vec::new()),
                 running: AtomicBool::new(false),
                 next_id: AtomicUsize::new(0),
                 active: AtomicUsize::new(0),
                 completion_tx: tx,
-                completion_rx: Mutex::new(Some(rx)),
+                completion_rx: {
+                    let cell = OnceCell::new();
+                    let _ = cell.set(tokio::sync::Mutex::new(rx));
+                    cell
+                },
             }),
+            custom_name: None,
             auto_cleanup: true,
         }
-    }
-
-    /// Disable / enable automatic removal of successfully finished children.
-    pub fn with_auto_cleanup(mut self, v: bool) -> Self {
-        self.auto_cleanup = v;
-        self
     }
 
     /// Register a child **before** the supervisor is started.
@@ -117,28 +136,24 @@ impl ProcessManager {
             "cannot call insert() after manager has started – use add() instead"
         );
         self.pre_start
-            .push(Arc::new(Box::new(process) as Box<dyn Runnable>));
+            .push(Arc::from(Box::new(process) as Box<dyn Runnable>));
     }
 
     /// Add a child *while* the manager is already running. The child is spawned
-    /// immediately.  Before start-up this behaves the same as [`insert`].
+    /// immediately.  Before start-up this behaves the same as [`crate::ProcessManager::insert`].
     pub fn add(&self, process: impl Runnable) {
-        let proc: Arc<Box<dyn Runnable>> = Arc::new(Box::new(process) as Box<dyn Runnable>);
+        let proc: Arc<dyn Runnable> = Arc::from(Box::new(process) as Box<dyn Runnable>);
 
-        // Not running yet? → queue for start-up.
-        if !self.inner.running.load(Ordering::SeqCst) {
-            let mut guard = self.inner.processes.lock().unwrap();
-            guard.push(Child {
-                id: self.inner.next_id.fetch_add(1, Ordering::SeqCst),
-                handle: Arc::from(proc.process_handle()),
-                proc,
-            });
-            return;
-        }
+        assert!(
+            self.inner.running.load(Ordering::SeqCst),
+            "cannot call add() before manager has started – use insert() instead"
+        );
 
         // Running → register & spawn immediately.
         let id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
-        let handle = Arc::from(proc.process_handle());
+        let handle = proc.process_handle();
+        // cache handle immediately
+        self.inner.handles.lock().unwrap().push(Arc::clone(&handle));
 
         {
             let mut guard = self.inner.processes.lock().unwrap();
@@ -146,10 +161,9 @@ impl ProcessManager {
                 id,
                 proc: Arc::clone(&proc),
                 handle,
+                join_handle: Arc::new(spawn_child(id, proc, Arc::clone(&self.inner))),
             });
         }
-
-        spawn_child(id, proc, Arc::clone(&self.inner));
     }
 }
 
@@ -168,40 +182,57 @@ impl Runnable for ProcessManager {
         Box::pin(async move {
             inner.running.store(true, Ordering::SeqCst);
 
+            let name = self.process_name();
+
+            #[cfg(feature = "tracing")]
+            ::tracing::info!("Start process manager {name}");
+            #[cfg(all(not(feature = "tracing"), feature = "log"))]
+            ::log::info!("Start process manager {name}");
+            #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+            eprintln!("Start process manager {name}");
+
             /* -- spawn every child registered before start() ---------------- */
             for proc in initial {
                 let id = inner.next_id.fetch_add(1, Ordering::SeqCst);
-                let handle = Arc::from(proc.process_handle());
+                let handle = proc.process_handle();
 
                 {
                     let mut g = inner.processes.lock().unwrap();
                     g.push(Child {
                         id,
                         proc: Arc::clone(&proc),
-                        handle,
+                        handle: Arc::clone(&handle),
+                        join_handle: Arc::new(spawn_child(id, proc, Arc::clone(&inner))),
                     });
+                    inner.handles.lock().unwrap().push(handle);
                 }
-                spawn_child(id, proc, Arc::clone(&inner));
             }
 
             /* -- supervisor event-loop -------------------------------------- */
-            let mut completion_rx = inner
+            let completion_rx = inner
                 .completion_rx
-                .lock()
-                .unwrap()
-                .take()
+                .get()
                 .expect("process_start called twice");
+            let mut completion_rx = completion_rx.lock().await;
 
             let mut first_error: Option<RuntimeError> = None;
 
             loop {
+                #[cfg(feature = "tracing")]
+                {
+                    for child in self.inner.processes.lock().unwrap().iter() {
+                        ::tracing::info!(
+                            "Process {}: running={:?}",
+                            child.proc.process_name(),
+                            !child.join_handle.is_finished()
+                        );
+                    }
+                }
+
                 // exit criterion: no active children left
                 if inner.active.load(Ordering::SeqCst) == 0 {
                     inner.running.store(false, Ordering::SeqCst);
-                    return match first_error {
-                        Some(e) => Err(e),
-                        None => Ok(()),
-                    };
+                    break;
                 }
 
                 match completion_rx.recv().await {
@@ -211,6 +242,12 @@ impl Runnable for ProcessManager {
                                 if auto_cleanup {
                                     let mut g = inner.processes.lock().unwrap();
                                     g.retain(|c| c.id != cid);
+                                    // also remove cached handle
+                                    inner
+                                        .handles
+                                        .lock()
+                                        .unwrap()
+                                        .retain(|h| g.iter().any(|c| Arc::ptr_eq(&c.handle, h)));
                                 }
                             }
                             Err(err) => {
@@ -230,15 +267,40 @@ impl Runnable for ProcessManager {
                     }
                 }
             }
+
+            match first_error {
+                Some(error) => {
+                    #[cfg(feature = "tracing")]
+                    ::tracing::info!("Shutdown process manager {name} with error: {error:?}");
+                    #[cfg(all(not(feature = "tracing"), feature = "log"))]
+                    ::log::info!("Shutdown process manager {name} with error: {error:?}");
+                    #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+                    eprintln!("Shutdown process manager {name} with error: {error:?}");
+                    Err(error)
+                }
+                None => {
+                    #[cfg(feature = "tracing")]
+                    ::tracing::info!("Shutdown process manager {name}");
+                    #[cfg(all(not(feature = "tracing"), feature = "log"))]
+                    ::log::info!("Shutdown process manager {name}");
+                    #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+                    eprintln!("Shutdown process manager {name}");
+                    Ok(())
+                }
+            }
         })
     }
 
-    fn process_name(&self) -> String {
-        format!("process-manager-{}", self.id)
+    fn process_name(&self) -> Cow<'static, str> {
+        if let Some(ref name) = self.custom_name {
+            name.clone()
+        } else {
+            format!("process-manager-{}", self.id).into()
+        }
     }
 
-    fn process_handle(&self) -> Box<dyn ProcessControlHandler> {
-        Box::new(Handle {
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        Arc::new(Handle {
             inner: Arc::clone(&self.inner),
         })
     }
@@ -262,17 +324,60 @@ impl ProcessControlHandler for Handle {
     fn shutdown(&self) -> CtrlFuture<'_> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
+            let mut set = JoinSet::new();
+
             let handles = {
                 let guard = inner.processes.lock().unwrap();
                 guard
                     .iter()
-                    .map(|c| Arc::clone(&c.handle))
+                    .map(|child| {
+                        (
+                            child.proc.process_name(),
+                            child.handle.clone(),
+                            child.join_handle.clone(),
+                        )
+                    })
                     .collect::<Vec<_>>()
             };
 
-            for h in handles {
-                h.shutdown().await;
+            for (name, h, jh) in handles {
+                set.spawn(async move {
+                    #[cfg(feature = "tracing")]
+                    ::tracing::info!(name = %name, "Initiate shutdown");
+                    #[cfg(all(not(feature = "tracing"), feature = "log"))]
+                    ::log::info!("Initiate shutdown {name}");
+                    #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+                    eprintln!("Initiate shutdown {name}");
+
+                    let dur = Duration::from_secs(30);
+                    let now = Instant::now();
+                    let timeout = tokio::time::timeout(dur, h.shutdown()).await;
+                    let _elapsed = now.elapsed();
+
+                    match timeout {
+                        Ok(_) => {
+                            // Shutdown ok
+                            #[cfg(feature = "tracing")]
+                            ::tracing::info!(name = %name, elapsed = ?_elapsed, "Shutdown completed");
+                            #[cfg(all(not(feature = "tracing"), feature = "log"))]
+                            ::log::info!("Process {name}: shutdown completed");
+                            #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+                            eprintln!("Process {name}: shutdown completed");
+                        }
+                        Err(_) => {
+                            jh.abort();
+                            // Timed out.
+                            #[cfg(feature = "tracing")]
+                            ::tracing::info!(name = %name, elapsed = ?_elapsed, "Shutdown timed out");
+                            #[cfg(all(not(feature = "tracing"), feature = "log"))]
+                            ::log::info!("Process {name}: Shutdown timed out after {dur:?}");
+                            #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+                            eprintln!("Process {name}: Shutdown timed out after {dur:?}");
+                        }
+                    }
+                });
             }
+            let _ = set.join_all().await;
         })
     }
 
@@ -280,11 +385,8 @@ impl ProcessControlHandler for Handle {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             let handles = {
-                let guard = inner.processes.lock().unwrap();
-                guard
-                    .iter()
-                    .map(|c| Arc::clone(&c.handle))
-                    .collect::<Vec<_>>()
+                let guard = inner.handles.lock().unwrap();
+                guard.clone()
             };
 
             for h in handles {
@@ -298,41 +400,65 @@ impl ProcessControlHandler for Handle {
 /*  Helper – spawn a single child                                             */
 /* ========================================================================== */
 
-fn spawn_child(id: usize, proc: Arc<Box<dyn Runnable>>, inner: Arc<Inner>) {
+fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) -> JoinHandle<()> {
+    // increment *before* spawning the task – guarantees the counter is in sync
     inner.active.fetch_add(1, Ordering::SeqCst);
     let tx = inner.completion_tx.clone();
 
     tokio::spawn(async move {
+        // Task already accounted for in the caller.
         let name = proc.process_name();
-
         #[cfg(feature = "tracing")]
-        ::tracing::info!("Start process {name}");
+        ::tracing::info!(name = %name, "Start process");
         #[cfg(all(not(feature = "tracing"), feature = "log"))]
         ::log::info!("Start process {name}");
         #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
         eprintln!("Start process {name}");
 
-        let res = proc.process_start().await;
+        // run the child and convert a panic into an `Err` so the supervisor
+        // can react instead of hanging forever.
+        let catch_fut = AssertUnwindSafe(proc.process_start()).catch_unwind();
+
+        #[cfg(feature = "tracing")]
+        let catch_result = {
+            let span = ::tracing::info_span!("process", name = %name);
+            catch_fut.instrument(span).await
+        };
+        #[cfg(not(feature = "tracing"))]
+        let catch_result = { catch_fut.await };
+
+        let res = catch_result.unwrap_or_else(|panic| {
+            let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = panic.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            Err(RuntimeError::Internal {
+                message: format!("process panicked: {msg}"),
+            })
+        });
 
         match &res {
             Ok(_) => {
                 #[cfg(feature = "tracing")]
-                ::tracing::info!("Process {name} stopped");
+                ::tracing::info!(name = %name, "Process stopped");
                 #[cfg(all(not(feature = "tracing"), feature = "log"))]
-                ::log::info!("Process {name} stopped");
+                ::log::info!("Process {name}: stopped");
                 #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
-                eprintln!("Process {name} stopped");
+                eprintln!("Process {name}: stopped");
             }
             Err(err) => {
                 #[cfg(feature = "tracing")]
-                ::tracing::error!("Process {name} failed: {err:?}");
+                ::tracing::error!(name = %name, "Process failed: {err:?}");
                 #[cfg(all(not(feature = "tracing"), feature = "log"))]
-                ::log::error!("Process {name} failed: {err:?}");
+                ::log::error!("Process {name}: failed {err:?}");
                 #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
-                eprintln!("Process {name} failed: {err:?}");
+                eprintln!("Process {name}: failed {err:?}");
             }
         }
 
         let _ = tx.send((id, res)); // ignore error if supervisor already gone
-    });
+    })
 }

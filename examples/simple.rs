@@ -51,14 +51,16 @@ impl Runnable for Worker {
                         println!("worker-{id}: shutting down");
                         break;
                     }
+                    // absorb any future control messages we don't explicitly handle
+                    ProcessOperation::Control(_) => continue,
                 }
             }
             Ok(())
         })
     }
 
-    fn process_handle(&self) -> Box<dyn ProcessControlHandler> {
-        Box::new(self.guard.handle())
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        self.guard.handle()
     }
 }
 
@@ -67,9 +69,10 @@ async fn main() {
     // -----------------------------------------------------------
     // 1. Build a manager and register two workers
     // -----------------------------------------------------------
-    let mut manager = ProcessManager::new();
-    manager.insert(Worker::new(0));
-    manager.insert(Worker::new(1));
+    let manager = ProcessManagerBuilder::default()
+        .pre_insert(Worker::new(0))
+        .pre_insert(Worker::new(1))
+        .build();
 
     let handle = manager.process_handle();
 

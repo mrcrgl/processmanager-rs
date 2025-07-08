@@ -6,6 +6,7 @@ use futures::stream::StreamExt as _;
 use signal_hook::consts::signal::*;
 use signal_hook::iterator::Handle;
 use signal_hook_tokio::{Signals, SignalsInfo};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 pub struct SignalReceiver {
@@ -49,7 +50,7 @@ impl Runnable for SignalReceiver {
                     ProcessOperation::Next(None) => continue,
                     ProcessOperation::Next(Some(signal)) => signal,
                     ProcessOperation::Control(RuntimeControlMessage::Shutdown) => break,
-                    ProcessOperation::Control(RuntimeControlMessage::Reload) => continue,
+                    ProcessOperation::Control(_) => continue,
                 };
 
                 //      tracing::warn!("Received process signal: {signal:?}");
@@ -74,7 +75,11 @@ impl Runnable for SignalReceiver {
         })
     }
 
-    fn process_handle(&self) -> Box<dyn ProcessControlHandler> {
-        Box::new(self.runtime_guard.handle())
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        self.runtime_guard.handle()
+    }
+
+    fn process_name(&self) -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("SignalReceiver")
     }
 }

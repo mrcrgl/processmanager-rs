@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::{RuntimeControlMessage, RuntimeHandle, RuntimeTicker};
+use crate::{ProcessControlHandler, RuntimeControlMessage, RuntimeHandle, RuntimeTicker};
 
+#[derive(Debug, Clone)]
 pub struct RuntimeGuard {
     inner: Arc<Inner>,
 }
@@ -70,8 +71,10 @@ impl RuntimeGuard {
         !closed
     }
 
-    pub fn handle(&self) -> RuntimeHandle {
-        RuntimeHandle::new(Arc::clone(&self.inner.control_ch_sender))
+    pub fn handle(&self) -> Arc<dyn ProcessControlHandler> {
+        Arc::new(RuntimeHandle::new(Arc::clone(
+            &self.inner.control_ch_sender,
+        )))
     }
 
     /// Busy-wait helper for tests / demos.

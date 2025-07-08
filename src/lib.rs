@@ -1,9 +1,12 @@
+#![deny(rustdoc::broken_intra_doc_links)]
+pub mod builtin;
 /// Manage multiple running services. A ProcessManager collects impl of `Runnable`
 /// and takes over the runtime management like starting, stopping (graceful or in
 /// failure) of services.
 ///
 /// ```rust
 /// use processmanager::*;
+/// use std::sync::Arc;
 ///
 /// #[tokio::main]
 /// async fn main() {
@@ -29,6 +32,7 @@
 ///                             break
 ///                         },
 ///                         ProcessOperation::Control(RuntimeControlMessage::Reload) => println!("trigger relead"),
+///                         ProcessOperation::Control(RuntimeControlMessage::Custom(_)) => println!("trigger custom action"),
 ///                     }
 ///                 }
 ///
@@ -36,13 +40,14 @@
 ///             })
 ///         }
 ///
-///         fn process_handle(&self) -> Box<dyn ProcessControlHandler> {
-///             Box::new(self.runtime_guard.handle())
+///         fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+///             self.runtime_guard.handle()
 ///          }
 ///     }
 ///
-///     let mut manager = ProcessManager::new();
-///     manager.insert(ExampleController::default());
+///     let manager = ProcessManagerBuilder::default()
+///         .pre_insert(ExampleController::default())
+///         .build();
 ///
 ///     let handle = manager.process_handle();
 ///
@@ -58,15 +63,22 @@
 ///
 mod error;
 mod process_manager;
-#[cfg(feature = "signal")]
-pub mod receiver;
+mod process_manager_builder;
 mod runtime_guard;
 mod runtime_handle;
 mod runtime_process;
 mod runtime_ticker;
+pub use builtin::*;
 pub use error::*;
 pub use process_manager::*;
+pub use process_manager_builder::*;
 pub use runtime_guard::*;
 pub use runtime_handle::*;
 pub use runtime_process::*;
 pub use runtime_ticker::*;
+
+#[cfg(feature = "signal")]
+pub mod receiver {
+    #[deprecated(note = "use `processmanager::builtin::SignalReceiver` instead")]
+    pub use crate::builtin::SignalReceiver;
+}

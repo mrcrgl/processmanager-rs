@@ -1,6 +1,8 @@
 use super::RuntimeError;
+use std::borrow::Cow;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 /// Boxed future returned by [`Runnable::process_start`].
 pub type ProcFuture<'a> = Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>>;
@@ -15,12 +17,12 @@ where
     fn process_start(&self) -> ProcFuture<'_>;
 
     /// Human-readable name, used for logging only.
-    fn process_name(&self) -> String {
-        std::any::type_name::<Self>().to_string()
+    fn process_name(&self) -> Cow<'static, str> {
+        Cow::Borrowed(std::any::type_name::<Self>())
     }
 
     /// Obtain a handle for shutdown / reload signalling.
-    fn process_handle(&self) -> Box<dyn ProcessControlHandler>;
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler>;
 }
 
 /// Boxed future returned by [`ProcessControlHandler`] control methods.
@@ -41,4 +43,35 @@ pub enum ProcessOperation<T> {
 pub enum RuntimeControlMessage {
     Reload,
     Shutdown,
+    /// User-defined messages for future extensibility.
+    Custom(Box<dyn std::any::Any + Send + Sync>),
+}
+
+impl Clone for RuntimeControlMessage {
+    fn clone(&self) -> Self {
+        match self {
+            RuntimeControlMessage::Reload => RuntimeControlMessage::Reload,
+            RuntimeControlMessage::Shutdown => RuntimeControlMessage::Shutdown,
+            RuntimeControlMessage::Custom(_) => {
+                panic!("Cloning `Custom` control messages is not supported")
+            }
+        }
+    }
+}
+
+impl<R> Runnable for Arc<R>
+where
+    R: Runnable + ?Sized,
+{
+    fn process_start(&self) -> ProcFuture<'_> {
+        R::process_start(self)
+    }
+
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        R::process_handle(self)
+    }
+
+    fn process_name(&self) -> Cow<'static, str> {
+        R::process_name(self)
+    }
 }
