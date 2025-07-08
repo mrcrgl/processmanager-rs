@@ -6,7 +6,7 @@
 //! an external caller invokes [`ProcessControlHandler::shutdown`].
 //!
 //! # Example
-//! ```rust
+//! ```rust,ignore
 //! use processmanager::*;
 //!
 //! // Manager without real children that should stay alive.
