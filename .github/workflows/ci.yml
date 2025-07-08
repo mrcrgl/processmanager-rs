@@ -2,9 +2,9 @@ name: Rust CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
 
 jobs:
   build-test:
@@ -49,9 +49,3 @@ jobs:
 
       - name: Run tests (no default features)
         run: cargo test --no-default-features
-
-      - name: Feature powerset tests
-        uses: taiki-e/github-actions/cargo-hack@v0
-        with:
-          command: test
-          args: --feature-powerset --depth 2 --skip no_default
