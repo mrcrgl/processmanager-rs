@@ -352,13 +352,13 @@ impl ProcessControlHandler for Handle {
                     let dur = Duration::from_secs(30);
                     let now = Instant::now();
                     let timeout = tokio::time::timeout(dur, h.shutdown()).await;
-                    let elapsed = now.elapsed();
+                    let _elapsed = now.elapsed();
 
                     match timeout {
                         Ok(_) => {
                             // Shutdown ok
                             #[cfg(feature = "tracing")]
-                            ::tracing::info!(name = %name, elapsed = ?elapsed, "Shutdown completed");
+                            ::tracing::info!(name = %name, elapsed = ?_elapsed, "Shutdown completed");
                             #[cfg(all(not(feature = "tracing"), feature = "log"))]
                             ::log::info!("Process {name}: shutdown completed");
                             #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
@@ -368,7 +368,7 @@ impl ProcessControlHandler for Handle {
                             jh.abort();
                             // Timed out.
                             #[cfg(feature = "tracing")]
-                            ::tracing::info!(name = %name, elapsed = ?elapsed, "Shutdown timed out");
+                            ::tracing::info!(name = %name, elapsed = ?_elapsed, "Shutdown timed out");
                             #[cfg(all(not(feature = "tracing"), feature = "log"))]
                             ::log::info!("Process {name}: Shutdown timed out after {dur:?}");
                             #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
