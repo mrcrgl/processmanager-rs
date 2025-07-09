@@ -1,3 +1,20 @@
+//! Unix signal integration.
+//!
+//! `SignalReceiver` listens for `SIGHUP`, `SIGINT`, `SIGTERM`, and `SIGQUIT` and
+//! converts them into runtime-level control events so a [`ProcessManager`] can
+//! perform a graceful shutdown or reload.
+//!
+//! This module is compiled only when the crate’s **`signal`** feature is
+//! enabled.
+//!
+//! ```no_run
+//! use processmanager::{builtin::SignalReceiver, ProcessManagerBuilder};
+//!
+//! let mgr = ProcessManagerBuilder::default()
+//!     .pre_insert(SignalReceiver::default())
+//!     .build();
+//! ```
+//!
 use crate::{
     ProcFuture, ProcessControlHandler, ProcessOperation, Runnable, RuntimeControlMessage,
     RuntimeError, RuntimeGuard,
@@ -9,6 +26,8 @@ use signal_hook_tokio::{Signals, SignalsInfo};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// Built-in [`Runnable`] that converts POSIX signals into shutdown / reload
+/// requests and propagates them through the process-manager runtime.
 pub struct SignalReceiver {
     signals: Mutex<SignalsInfo>,
     signal_handle: Handle,
@@ -19,7 +38,7 @@ impl SignalReceiver {
     pub fn new() -> Self {
         let signals = Signals::new([SIGHUP, SIGINT, SIGTERM, SIGQUIT])
             .map_err(|err| RuntimeError::Internal {
-                message: format!("register process signals: {err:?}"),
+                message: format!("register signal handler: {err:?}"),
             })
             .expect("signals to register");
 
@@ -53,7 +72,8 @@ impl Runnable for SignalReceiver {
                     ProcessOperation::Control(_) => continue,
                 };
 
-                //      tracing::warn!("Received process signal: {signal:?}");
+                #[cfg(feature = "tracing")]
+                ::tracing::warn!(signal = ?signal, "Received process signal");
 
                 match signal {
                     SIGHUP => {
