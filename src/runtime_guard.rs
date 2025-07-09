@@ -15,11 +15,6 @@ struct Inner {
     control_ch_sender: Arc<Mutex<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>,
 }
 
-// SAFETY: All interior mutability is protected by `tokio::sync::Mutex`, so
-// `&RuntimeGuard` can be safely shared between threads.
-unsafe impl Send for RuntimeGuard {}
-unsafe impl Sync for RuntimeGuard {}
-
 impl RuntimeGuard {
     pub fn new() -> Self {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
