@@ -11,8 +11,6 @@
 //! ```bash
 //! cargo run --example dynamic_add
 //! ```
-mod simple;
-
 use processmanager::*;
 use std::{sync::Arc, time::Duration};
 use tokio::time::{interval, sleep};

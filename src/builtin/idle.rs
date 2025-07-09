@@ -1,34 +1,37 @@
-//! A no-op [`Runnable`] that just idles until it receives a shutdown request.
+//! A no-op [`Runnable`] that idles until it receives a shutdown request.
 //!
-//! `IdleProcess` is handy as a “tombstone” child for a [`ProcessManager`] that
-//! would otherwise stop immediately because it starts without any real
-//! children.  By registering an `IdleProcess`, the manager keeps running until
-//! an external caller invokes [`ProcessControlHandler::shutdown`].
+//! `IdleProcess` is useful as a *tombstone* child for a [`ProcessManager`] that
+//! would otherwise terminate immediately because it has no real children.
+//! Registering an `IdleProcess` keeps the supervisor alive until an external
+//! caller broadcasts [`ProcessControlHandler::shutdown`].
 //!
 //! # Example
-//! ```rust,ignore
-//! use processmanager::*;
+//! ```no_run
+//! use processmanager::{IdleProcess, ProcessManagerBuilder};
 //!
-//! // Manager without real children that should stay alive.
-//! let mgr = ProcessManagerBuilder::default()
+//! // Supervisor without real children that should stay alive.
+//! let _mgr = ProcessManagerBuilder::default()
 //!     .pre_insert(IdleProcess::default())
 //!     .build();
 //! ```
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use crate::{
     ProcFuture, ProcessControlHandler, ProcessOperation, Runnable, RuntimeControlMessage,
     RuntimeGuard,
 };
 
-/// A no-op process that simply waits for a shutdown request.
+/// A *tombstone* process that simply waits for a shutdown request.
+///
+/// It performs no work and exists solely to keep its parent
+/// [`ProcessManager`] alive until an explicit shutdown is broadcast.
 #[derive(Debug, Default)]
 pub struct IdleProcess {
     runtime_guard: RuntimeGuard,
 }
 
 impl IdleProcess {
-    /// Create a new idle process.
+    /// Construct a fresh idle process. Equivalent to [`Default::default`].
     pub fn new() -> Self {
         Self {
             runtime_guard: RuntimeGuard::default(),
@@ -41,8 +44,8 @@ impl Runnable for IdleProcess {
             let ticker = self.runtime_guard.runtime_ticker().await;
 
             loop {
-                // Sleep for a long time; the ticker wakes us early on control messages.
-                let sleep = tokio::time::sleep(std::time::Duration::from_secs(3600));
+                // Sleep for a long time; the ticker wakes us early when a control message arrives.
+                let sleep = tokio::time::sleep(Duration::from_secs(3600));
 
                 match ticker.tick(sleep).await {
                     ProcessOperation::Next(_) => continue,

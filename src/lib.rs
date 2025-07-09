@@ -33,6 +33,7 @@ pub mod builtin;
 ///                         },
 ///                         ProcessOperation::Control(RuntimeControlMessage::Reload) => println!("trigger relead"),
 ///                         ProcessOperation::Control(RuntimeControlMessage::Custom(_)) => println!("trigger custom action"),
+///                         ProcessOperation::Control(_) => unimplemented!(),
 ///                     }
 ///                 }
 ///

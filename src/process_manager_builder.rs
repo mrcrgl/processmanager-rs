@@ -1,13 +1,16 @@
 //! Fluent builder for constructing a [`ProcessManager`].
 //!
-//! The main goal of this helper is to get rid of the “wrong phase” panics
-//! (`insert()` vs. `add()`) by making the set-up phase explicit.  All children
-//! that are known at construction time are registered on the builder;
-//! afterwards `build()` hands you a fully configured manager that can be
-//! started immediately.
+//! Building a supervisor is a *setup-time* activity, whereas actually running
+//! it is a *runtime* concern. Mixing the two often leads to the familiar
+//! “wrong phase” panic when someone calls [`ProcessManager::insert`] **after**
+//! the manager has already started.
 //!
-//! Further configuration knobs (metrics, names, tracing options…) can be added
-//! here without changing the `ProcessManager` API again.
+//! `ProcessManagerBuilder` makes the configuration phase explicit: every child,
+//! option or tweak is registered **before** [`Self::build`] returns a
+//! ready-to-run supervisor.
+//!
+//! Additional knobs (metrics, tracing, names, …) can be added here in the
+//! future **without** touching the public API of [`ProcessManager`].
 use crate::{ProcessManager, Runnable};
 use std::borrow::Cow;
 
@@ -36,7 +39,7 @@ pub struct ProcessManagerBuilder {
     custom_name: Option<Cow<'static, str>>,
     /// Deferred actions that will be executed against the manager right before
     /// it is returned to the caller.
-    initialisers: Vec<BoxedInitializer>,
+    initializers: Vec<BoxedInitializer>,
 }
 
 impl ProcessManagerBuilder {
@@ -61,7 +64,7 @@ impl ProcessManagerBuilder {
     ///
     /// This is the compile-time safe counterpart to `ProcessManager::insert`.
     pub fn pre_insert(mut self, process: impl Runnable) -> Self {
-        self.initialisers
+        self.initializers
             .push(Box::new(move |mgr: &mut ProcessManager| {
                 // At this point the manager is *not* running yet so `insert`
                 // is always the correct method.
@@ -81,7 +84,7 @@ impl ProcessManagerBuilder {
         mgr.custom_name = self.custom_name;
 
         // Run all queued initialisers (child registrations, …).
-        for init in self.initialisers {
+        for init in self.initializers {
             init(&mut mgr);
         }
 

@@ -1,4 +1,4 @@
-//! Dynamic supervisor for asynchronous `Runnable`s.
+//! Dynamic supervisor for asynchronous [`Runnable`] implementations.
 //
 //! A `ProcessManager` can
 //!
@@ -90,13 +90,27 @@ pub struct ProcessManager {
     id: usize,
     pre_start: Vec<Arc<dyn Runnable>>,
     inner: Arc<Inner>,
-    /// Optional human-readable name overriding the default `process-manager-<id>`.
+    /// Optional human-readable name overriding the default
+    /// `"process-manager-<id>"`.
+    ///
+    /// If `None`, [`ProcessManager::process_name`] falls back to the automatic
+    /// naming scheme.
     pub(crate) custom_name: Option<Cow<'static, str>>,
+    /// When `true`, children that finish *successfully* are removed from the
+    /// internal lists so that long-running supervisors do not leak memory.
     pub(crate) auto_cleanup: bool,
 }
 
 impl ProcessManager {
-    /// New manager with auto-cleanup of finished children enabled.
+    /// Creates a fresh supervisor.
+    ///
+    /// * A unique *process-manager id* is assigned automatically.
+    /// * [`auto_cleanup`](ProcessManager::auto_cleanup) is **enabled** by
+    ///   default so that finished children are removed from the internal
+    ///   bookkeeping lists.
+    ///
+    /// The manager may be configured further with [`insert`] **before** it is
+    /// started or with [`add`] **after** it is running.
     pub fn new() -> Self {
         let id = PID.fetch_add(1, Ordering::SeqCst);
 
@@ -123,9 +137,10 @@ impl ProcessManager {
         }
     }
 
-    /// Register a child **before** the supervisor is started.
+    /// Registers a child **before** the supervisor itself is started.
     ///
-    /// Panics when called after [`process_start`](Runnable::process_start).
+    /// # Panics
+    /// Panics if the manager is already running.  Use [`add`] in that case.
     pub fn insert(&mut self, process: impl Runnable) {
         assert!(
             !self.inner.running.load(Ordering::SeqCst),
@@ -135,8 +150,10 @@ impl ProcessManager {
             .push(Arc::from(Box::new(process) as Box<dyn Runnable>));
     }
 
-    /// Add a child *while* the manager is already running. The child is spawned
-    /// immediately.  Before start-up this behaves the same as [`crate::ProcessManager::insert`].
+    /// Adds a child **while the manager is already running**.
+    ///
+    /// The new `Runnable` is spawned immediately in its own Tokio task.
+    /// Calling this method **before** start-up is equivalent to [`insert`].
     pub fn add(&self, process: impl Runnable) {
         let proc: Arc<dyn Runnable> = Arc::from(Box::new(process) as Box<dyn Runnable>);
 
@@ -283,6 +300,11 @@ impl Runnable for ProcessManager {
         })
     }
 
+    /// Returns the supervisor’s public name.
+    ///
+    /// If [`custom_name`](ProcessManager::custom_name) is `Some`, that value is
+    /// returned verbatim; otherwise the default pattern
+    /// `"process-manager-<id>"` is used.
     fn process_name(&self) -> Cow<'static, str> {
         if let Some(ref name) = self.custom_name {
             name.clone()
@@ -291,6 +313,10 @@ impl Runnable for ProcessManager {
         }
     }
 
+    /// Returns a handle that can control *all* currently running children of
+    /// this manager.
+    ///
+    /// The handle can be cloned freely and used from any async context.
     fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
         Arc::new(Handle {
             inner: Arc::clone(&self.inner),
@@ -309,6 +335,8 @@ struct Handle {
 }
 
 impl ProcessControlHandler for Handle {
+    /// Broadcasts [`ProcessControlHandler::shutdown`] to every currently active
+    /// child and waits for them to complete.
     fn shutdown(&self) -> CtrlFuture<'_> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
@@ -369,6 +397,9 @@ impl ProcessControlHandler for Handle {
         })
     }
 
+    /// Broadcasts [`ProcessControlHandler::reload`] to every active child.
+    /// The reload operations are executed in parallel and awaited before the
+    /// future completes.
     fn reload(&self) -> CtrlFuture<'_> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
@@ -384,6 +415,11 @@ impl ProcessControlHandler for Handle {
     }
 }
 
+/// Spawns one child task, converts panics into `RuntimeError`s and notifies the
+/// supervisor through the *completion channel*.
+///
+/// Accounting with [`Inner::active`] is done **before** the task is actually
+/// spawned so the supervisor has an accurate count even if the spawn fails.
 fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) -> JoinHandle<()> {
     // increment *before* spawning the task – guarantees the counter is in sync
     inner.active.fetch_add(1, Ordering::SeqCst);
