@@ -101,10 +101,6 @@ pub struct ProcessManager {
     pub(crate) auto_cleanup: bool,
 }
 
-/* ========================================================================== */
-/*  Construction / configuration                                              */
-/* ========================================================================== */
-
 impl ProcessManager {
     /// Creates a fresh supervisor.
     ///
@@ -184,10 +180,6 @@ impl ProcessManager {
     }
 }
 
-/* ========================================================================== */
-/*  Runnable implementation                                                   */
-/* ========================================================================== */
-
 impl Runnable for ProcessManager {
     fn process_start(&self) -> ProcFuture<'_> {
         let inner = Arc::clone(&self.inner);
@@ -238,7 +230,7 @@ impl Runnable for ProcessManager {
                 #[cfg(feature = "tracing")]
                 {
                     for child in self.inner.processes.lock().unwrap().iter() {
-                        ::tracing::info!(
+                        ::tracing::debug!(
                             "Process {}: running={:?}",
                             child.proc.process_name(),
                             !child.join_handle.is_finished()
@@ -288,9 +280,9 @@ impl Runnable for ProcessManager {
             match first_error {
                 Some(error) => {
                     #[cfg(feature = "tracing")]
-                    ::tracing::info!("Shutdown process manager {name} with error: {error:?}");
+                    ::tracing::warn!("Shutdown process manager {name} with error: {error:?}");
                     #[cfg(all(not(feature = "tracing"), feature = "log"))]
-                    ::log::info!("Shutdown process manager {name} with error: {error:?}");
+                    ::log::warn!("Shutdown process manager {name} with error: {error:?}");
                     #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
                     eprintln!("Shutdown process manager {name} with error: {error:?}");
                     Err(error)
@@ -337,10 +329,6 @@ impl Default for ProcessManager {
         Self::new()
     }
 }
-
-/* ========================================================================== */
-/*  Control Handle                                                            */
-/* ========================================================================== */
 
 struct Handle {
     inner: Arc<Inner>,
@@ -427,9 +415,6 @@ impl ProcessControlHandler for Handle {
     }
 }
 
-/* ========================================================================== */
-/*  Helper – spawn a single child                                             */
-/* ========================================================================== */
 /// Spawns one child task, converts panics into `RuntimeError`s and notifies the
 /// supervisor through the *completion channel*.
 ///
