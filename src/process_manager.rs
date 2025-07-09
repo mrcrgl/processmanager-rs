@@ -435,7 +435,6 @@ impl ProcessControlHandler for Handle {
 ///
 /// Accounting with [`Inner::active`] is done **before** the task is actually
 /// spawned so the supervisor has an accurate count even if the spawn fails.
-
 fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) -> JoinHandle<()> {
     // increment *before* spawning the task – guarantees the counter is in sync
     inner.active.fetch_add(1, Ordering::SeqCst);
