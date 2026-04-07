@@ -285,6 +285,35 @@ async fn test_runtime_guard_shutdown_sent_before_ticker_is_not_lost() {
 }
 
 #[tokio::test]
+async fn test_runtime_handle_custom_control_message_is_delivered() {
+    let guard = RuntimeGuard::default();
+    let handle = guard.handle();
+
+    // Send custom control message before ticker creation to verify both custom
+    // payload support and startup buffering behavior.
+    handle.custom(42_u32).await;
+
+    let ticker = guard.runtime_ticker().await;
+
+    let op = timeout(
+        Duration::from_secs(1),
+        ticker.tick(tokio::time::sleep(Duration::from_secs(5))),
+    )
+    .await
+    .expect("timed out waiting for queued custom message");
+
+    match op {
+        ProcessOperation::Control(RuntimeControlMessage::Custom(payload)) => {
+            let value = payload
+                .downcast::<u32>()
+                .expect("expected u32 custom payload");
+            assert_eq!(*value, 42_u32);
+        }
+        _ => panic!("expected custom control message"),
+    }
+}
+
+#[tokio::test]
 async fn test_reload_dispatch_is_parallel() {
     let mut manager = ProcessManager::new();
     manager.insert(SlowReloadController::new(Duration::from_millis(700)));

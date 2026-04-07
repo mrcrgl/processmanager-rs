@@ -52,6 +52,9 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   returning; children are aborted after grace timeout (`#23`).
 - `ProcessManager` reload fanout now dispatches in parallel, matching documented
   behavior (`#25`).
+- `RuntimeHandle` now supports forwarding arbitrary control messages, including
+  `RuntimeControlMessage::Custom(...)`, via `control(...)` and `custom(...)`
+  helpers (`#20`).
 
 ### Removed
 - Unused aliases and imports producing compiler warnings.

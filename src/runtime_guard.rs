@@ -9,7 +9,7 @@
 //! 1. [`runtime_ticker`](RuntimeGuard::runtime_ticker) – creates the sole ticker
 //!    and connects it to the control fan-out.
 //! 2. [`handle`](RuntimeGuard::handle) – returns a cheap, clonable
-//!    [`ProcessControlHandler`] that broadcasts control messages.
+//!    [`RuntimeHandle`] that broadcasts control messages.
 //! 3. [`is_running`](RuntimeGuard::is_running) /
 //!    [`block_until_shutdown`](RuntimeGuard::block_until_shutdown) – helpers
 //!    for observing runtime state in tests and demos.
@@ -42,7 +42,7 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, Notify};
 
-use crate::{ProcessControlHandler, RuntimeControlMessage, RuntimeHandle, RuntimeTicker};
+use crate::{CtrlFuture, RuntimeControlMessage, RuntimeHandle, RuntimeTicker};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeGuard {
@@ -135,12 +135,28 @@ impl RuntimeGuard {
         !closed
     }
 
-    /// Obtain a clonable [`ProcessControlHandler`] that broadcasts control
-    /// messages to the ticker.
-    pub fn handle(&self) -> Arc<dyn ProcessControlHandler> {
+    /// Obtain a clonable [`RuntimeHandle`] that broadcasts control messages to
+    /// the ticker.
+    pub fn handle(&self) -> Arc<RuntimeHandle> {
         Arc::new(RuntimeHandle::new(Arc::clone(
             &self.inner.control_ch_sender,
         )))
+    }
+
+    /// Send an arbitrary runtime control message.
+    pub fn control(&self, msg: RuntimeControlMessage) -> CtrlFuture<'_> {
+        Box::pin(async move {
+            let ch = self.inner.control_ch_sender.lock().await;
+            let _ = ch.send(msg).await;
+        })
+    }
+
+    /// Send a custom runtime control payload.
+    pub fn custom<T>(&self, message: T) -> CtrlFuture<'_>
+    where
+        T: std::any::Any + Send + Sync + 'static,
+    {
+        self.control(RuntimeControlMessage::Custom(Box::new(message)))
     }
 
     /// **Busy-wait** helper for tests and demos.

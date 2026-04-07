@@ -5,6 +5,8 @@
 //! channel.  The async [`shutdown`](ProcessControlHandler::shutdown) and
 //! [`reload`](ProcessControlHandler::reload) methods enqueue the requested
 //! operation and return immediately without waiting for it to be executed.
+//! Use [`RuntimeHandle::control`] or [`RuntimeHandle::custom`] to inject custom
+//! control messages.
 //
 use std::sync::Arc;
 
@@ -28,20 +30,30 @@ impl RuntimeHandle {
     ) -> Self {
         Self { control_ch }
     }
+
+    /// Send an arbitrary runtime control message.
+    pub fn control(&self, msg: RuntimeControlMessage) -> CtrlFuture<'_> {
+        Box::pin(async move {
+            let ch = self.control_ch.lock().await;
+            let _ = ch.send(msg).await;
+        })
+    }
+
+    /// Send a custom runtime control payload.
+    pub fn custom<T>(&self, message: T) -> CtrlFuture<'_>
+    where
+        T: std::any::Any + Send + Sync + 'static,
+    {
+        self.control(RuntimeControlMessage::Custom(Box::new(message)))
+    }
 }
 
 impl ProcessControlHandler for RuntimeHandle {
     fn shutdown(&self) -> CtrlFuture<'_> {
-        Box::pin(async move {
-            let ch = self.control_ch.lock().await;
-            let _ = ch.send(RuntimeControlMessage::Shutdown).await;
-        })
+        self.control(RuntimeControlMessage::Shutdown)
     }
 
     fn reload(&self) -> CtrlFuture<'_> {
-        Box::pin(async move {
-            let ch = self.control_ch.lock().await;
-            let _ = ch.send(RuntimeControlMessage::Reload).await;
-        })
+        self.control(RuntimeControlMessage::Reload)
     }
 }
