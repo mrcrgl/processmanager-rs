@@ -58,7 +58,20 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          crate_version=$(cargo pkgid | sed -E 's|.*@([^ ]+)$|\1|')
+          crate_version=$(awk '
+            /^\[package\]$/ { in_package=1; next }
+            /^\[/ && in_package { exit }
+            in_package && $1 == "version" {
+              gsub(/"/, "", $3);
+              print $3;
+              exit
+            }
+          ' Cargo.toml)
+
+          if [[ -z "${crate_version}" ]]; then
+            echo "Unable to read package version from Cargo.toml" >&2
+            exit 1
+          fi
 
           if [[ "${tag}" != "v${crate_version}" ]]; then
             echo "Tag ${tag} does not match crate version v${crate_version}" >&2
