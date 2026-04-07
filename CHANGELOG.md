@@ -57,6 +57,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   helpers (`#20`).
 - `RuntimeControlMessage::Custom(...)` is now clone-safe and no longer panics
   when cloned (`#27`).
+- `RuntimeGuard` now supports reliable restart cycles (`start, shutdown, start`)
+  by retrying control-message delivery across ticker generations (`#18`).
 
 ### Removed
 - Unused aliases and imports producing compiler warnings.
