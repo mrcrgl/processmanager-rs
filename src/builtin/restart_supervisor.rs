@@ -180,6 +180,3 @@ impl Runnable for RestartSupervisor {
         Cow::Borrowed("RestartSupervisor")
     }
 }
-
-#[deprecated(note = "use `RestartSupervisor` instead")]
-pub type RestartWrapper = RestartSupervisor;
