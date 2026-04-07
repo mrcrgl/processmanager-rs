@@ -38,7 +38,7 @@ processes.
 | Error propagation                | A failing child triggers a global shutdown and returns the *first* error. |
 | Auto cleanup                     | Optionally remove finished children to keep memory usage bounded.         |
 | Hierarchical composition         | Managers implement `Runnable` themselves → build arbitrary process trees. |
-| Built-in helpers                 | See [`IdleProcess`](#built-in-helpers) and [`SignalReceiver`](#built-in-helpers). |
+| Built-in helpers                 | See [`IdleProcess`](#built-in-helpers), [`RestartSupervisor`](#built-in-helpers) and [`SignalReceiver`](#built-in-helpers). |
 
 ---
 
@@ -126,6 +126,7 @@ async fn main() {
 | Helper           | Purpose                                                                                                                  | Feature flag |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------ |
 | `IdleProcess`    | Keeps an otherwise empty manager alive until an external shutdown is requested.                                          | —            |
+| `RestartSupervisor` | Wraps a child `Runnable`, restarts it after failures, and applies exponential backoff between retry attempts.        | —            |
 | `SignalReceiver` | Listens for `SIGHUP`, `SIGINT`, `SIGTERM`, `SIGQUIT` and converts them into *shutdown / reload* control messages.        | `signal`     |
 
 Enable `SignalReceiver` like this:
@@ -145,6 +146,7 @@ Cargo:
 | -------------------------------------------- | ------------------------------------------------------ |
 | `cargo run --example simple`                 | Minimal setup, two workers, graceful shutdown          |
 | `cargo run --example dynamic_add`            | Dynamically add workers while the manager is running   |
+| `cargo run --example restart_supervisor`     | Restart a flaky worker with exponential backoff        |
 
 Feel free to copy or adapt the code for your own services.
 
