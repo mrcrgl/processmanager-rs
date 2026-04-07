@@ -28,6 +28,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 - `RunnableWithContext`, `RuntimeContext`, and
   `with_runtime_context(...)` so runnables can consume runtime
   control/ticker context without carrying a `RuntimeGuard` field (`#21`).
+- New `axum` example showing how to run a web server under `ProcessManager`
+  with graceful shutdown and reload handling (`#11`).
 
 ### Changed
 - `process_handle()` now returns `Arc<dyn ProcessControlHandler>` (cheap cloning,
@@ -49,6 +51,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   with bounded runtimes to catch regressions in sample programs (`#37`).
 - CI now also executes the `runtime_context` example to keep the
   context-based runnable API covered (`#21`).
+- CI now executes the `axum` example to keep web-framework integration sample
+  code validated (`#11`).
 - Added `RestartSupervisor` with configurable exponential backoff to
   automatically restart failed child runnables (`#19`).
 

@@ -15,6 +15,7 @@ cargo run --example <name>
 | `dynamic_add`                    | add new `Runnable`s **while the manager is already running**            |
 | `restart_supervisor`             | restart a flaky child with configurable exponential backoff            |
 | `runtime_context`                | implement `RunnableWithContext` without manually managing `RuntimeGuard` |
+| `axum`                           | run an `axum` HTTP server as a managed runnable with graceful shutdown   |
 
 Feel free to copy / adapt the code for your own services and let us know if you
 run into problems.
