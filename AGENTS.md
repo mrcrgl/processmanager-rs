@@ -14,6 +14,9 @@ Contribution and review policy for `mrcrgl/processmanager-rs`.
 - If a PR addresses multiple issues, list all related issue numbers.
 
 ## Branching scheme (mandatory)
+- Always update local base from remote before creating a branch:
+  - `git checkout main`
+  - `git pull --ff-only origin main`
 - Use this branch format for all work: `<type>/<issue-id>-<short-kebab-description>`.
 - Common `type` values: `feat`, `fix`, `docs`, `refactor`, `test`, `ci`, `chore`.
 - Branches must include the primary GitHub issue id for traceability.
@@ -22,6 +25,14 @@ Contribution and review policy for `mrcrgl/processmanager-rs`.
   - `feat/42-runtime-restart-support`
   - `fix/24-runtimeguard-startup-message-drop`
   - `docs/29-agents-branching-policy`
+
+## PR naming convention (mandatory)
+- Use this PR title format: `<type>: <short imperative summary>`.
+- Keep titles concise and implementation-focused.
+- Do not include coding-agent/tool tags in titles (for example: `codex`, `copilot`, `chatgpt`, `ai`).
+- Examples:
+  - `fix: retain pre-start runtime control messages`
+  - `docs: add mandatory branch and PR naming conventions`
 
 ## Changelog policy (mandatory)
 - `CHANGELOG.md` must be updated for every issue resolved by a PR.
