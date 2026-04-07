@@ -55,6 +55,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 - `RuntimeHandle` now supports forwarding arbitrary control messages, including
   `RuntimeControlMessage::Custom(...)`, via `control(...)` and `custom(...)`
   helpers (`#20`).
+- `RuntimeControlMessage::Custom(...)` is now clone-safe and no longer panics
+  when cloned (`#27`).
 
 ### Removed
 - Unused aliases and imports producing compiler warnings.

@@ -68,28 +68,14 @@ pub enum ProcessOperation<T> {
 /// wildcard arm (`_`) when pattern-matching so that new variants introduced in
 /// future releases do not break compilation.
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum RuntimeControlMessage {
     /// Trigger a *hot reload*.
     Reload,
     /// Request a *graceful shutdown*.
     Shutdown,
     /// User-defined message for custom extensions.
-    Custom(Box<dyn std::any::Any + Send + Sync>),
-}
-
-impl Clone for RuntimeControlMessage {
-    /// Manual implementation is required because the enum is
-    /// `#[non_exhaustive]`; remember to update this when adding new variants.
-    fn clone(&self) -> Self {
-        match self {
-            RuntimeControlMessage::Reload => RuntimeControlMessage::Reload,
-            RuntimeControlMessage::Shutdown => RuntimeControlMessage::Shutdown,
-            RuntimeControlMessage::Custom(_) => {
-                panic!("Cloning `Custom` control messages is not supported")
-            }
-        }
-    }
+    Custom(Arc<dyn std::any::Any + Send + Sync>),
 }
 
 impl<R> Runnable for Arc<R>
