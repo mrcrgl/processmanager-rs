@@ -55,3 +55,4 @@ jobs:
           timeout 30s cargo run --example simple
           timeout 45s cargo run --example dynamic_add
           timeout 30s cargo run --example restart_supervisor
+          timeout 30s cargo run --example runtime_context
