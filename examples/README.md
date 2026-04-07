@@ -14,6 +14,7 @@ cargo run --example <name>
 | `simple`                         | minimal setup: one manager, two workers, graceful shutdown             |
 | `dynamic_add`                    | add new `Runnable`s **while the manager is already running**            |
 | `restart_supervisor`             | restart a flaky child with configurable exponential backoff            |
+| `runtime_context`                | implement `RunnableWithContext` without manually managing `RuntimeGuard` |
 
 Feel free to copy / adapt the code for your own services and let us know if you
 run into problems.

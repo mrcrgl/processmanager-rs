@@ -147,6 +147,7 @@ Cargo:
 | `cargo run --example simple`                 | Minimal setup, two workers, graceful shutdown          |
 | `cargo run --example dynamic_add`            | Dynamically add workers while the manager is running   |
 | `cargo run --example restart_supervisor`     | Restart a flaky worker with exponential backoff        |
+| `cargo run --example runtime_context`        | Use `RunnableWithContext` without storing `RuntimeGuard` |
 
 Feel free to copy or adapt the code for your own services.
 

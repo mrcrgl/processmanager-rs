@@ -25,6 +25,9 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   `git pull --ff-only origin main` before branch creation (`#32`).
 - Regression test coverage for runtime coordination contracts now explicitly
   includes the `add()` pre-start panic behavior (`#28`).
+- `RunnableWithContext`, `RuntimeContext`, and
+  `with_runtime_context(...)` so runnables can consume runtime
+  control/ticker context without carrying a `RuntimeGuard` field (`#21`).
 
 ### Changed
 - `process_handle()` now returns `Arc<dyn ProcessControlHandler>` (cheap cloning,
@@ -44,6 +47,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   startup panics and `insert` must be used during setup (`#26`).
 - CI now executes `simple`, `dynamic_add`, and `restart_supervisor` examples
   with bounded runtimes to catch regressions in sample programs (`#37`).
+- CI now also executes the `runtime_context` example to keep the
+  context-based runnable API covered (`#21`).
 - Added `RestartSupervisor` with configurable exponential backoff to
   automatically restart failed child runnables (`#19`).
 
