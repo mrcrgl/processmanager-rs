@@ -78,12 +78,77 @@ struct SlowShutdownController {
     runtime_guard: RuntimeGuard,
 }
 
+struct SlowReloadController {
+    reload_delay: Duration,
+    runtime_guard: RuntimeGuard,
+}
+
+impl SlowReloadController {
+    fn new(reload_delay: Duration) -> Self {
+        Self {
+            reload_delay,
+            runtime_guard: RuntimeGuard::default(),
+        }
+    }
+}
+
+struct SlowReloadHandle {
+    inner: Arc<dyn ProcessControlHandler>,
+    reload_delay: Duration,
+}
+
+impl ProcessControlHandler for SlowReloadHandle {
+    fn shutdown(&self) -> processmanager::CtrlFuture<'_> {
+        let inner = Arc::clone(&self.inner);
+        Box::pin(async move {
+            inner.shutdown().await;
+        })
+    }
+
+    fn reload(&self) -> processmanager::CtrlFuture<'_> {
+        let inner = Arc::clone(&self.inner);
+        let delay = self.reload_delay;
+        Box::pin(async move {
+            tokio::time::sleep(delay).await;
+            inner.reload().await;
+        })
+    }
+}
+
 impl SlowShutdownController {
     fn new(shutdown_delay: Duration) -> Self {
         Self {
             shutdown_delay,
             runtime_guard: RuntimeGuard::default(),
         }
+    }
+}
+
+impl Runnable for SlowReloadController {
+    fn process_start(&self) -> ProcFuture<'_> {
+        Box::pin(async {
+            let ticker = self.runtime_guard.runtime_ticker().await;
+
+            loop {
+                match ticker
+                    .tick(tokio::time::sleep(Duration::from_secs(30)))
+                    .await
+                {
+                    ProcessOperation::Next(_) => continue,
+                    ProcessOperation::Control(RuntimeControlMessage::Shutdown) => break,
+                    ProcessOperation::Control(_) => continue,
+                }
+            }
+
+            Ok(())
+        })
+    }
+
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        Arc::new(SlowReloadHandle {
+            inner: self.runtime_guard.handle(),
+            reload_delay: self.reload_delay,
+        })
     }
 }
 
@@ -188,6 +253,38 @@ async fn test_runtime_guard_shutdown_sent_before_ticker_is_not_lost() {
             ProcessOperation::Control(RuntimeControlMessage::Shutdown)
         ),
         "expected shutdown control message, got different operation"
+    );
+}
+
+#[tokio::test]
+async fn test_reload_dispatch_is_parallel() {
+    let mut manager = ProcessManager::new();
+    manager.insert(SlowReloadController::new(Duration::from_millis(700)));
+    manager.insert(SlowReloadController::new(Duration::from_millis(700)));
+
+    let (tx, rx) = channel::<bool>();
+
+    let handle = manager.process_handle();
+    tokio::task::spawn(async move {
+        manager.process_start().await.unwrap();
+        tx.send(true).unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let started = tokio::time::Instant::now();
+    handle.reload().await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(1200),
+        "reload was slower than expected for parallel dispatch: elapsed={elapsed:?}"
+    );
+
+    handle.shutdown().await;
+    assert!(
+        timeout(Duration::from_secs(2), rx).await.is_ok(),
+        "manager did not terminate after shutdown"
     );
 }
 
