@@ -21,6 +21,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   names.
 - `AGENTS.md` contribution policy with mandatory issue-linked branch naming
   scheme (`<type>/<issue-id>-<short-kebab-description>`).
+- `AGENTS.md` PR title convention (no coding-agent/tool tags) and mandatory
+  `git pull --ff-only origin main` before branch creation (`#32`).
 
 ### Changed
 - `process_handle()` now returns `Arc<dyn ProcessControlHandler>` (cheap cloning,
