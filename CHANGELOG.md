@@ -6,6 +6,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] – 2026-04-07
+
 ### Added
 - GitHub Actions workflow for CI (`build`, `clippy`, `fmt`, full test-matrix,
   feature power-set).
