@@ -73,6 +73,48 @@ impl ExampleController {
     }
 }
 
+struct SlowShutdownController {
+    shutdown_delay: Duration,
+    runtime_guard: RuntimeGuard,
+}
+
+impl SlowShutdownController {
+    fn new(shutdown_delay: Duration) -> Self {
+        Self {
+            shutdown_delay,
+            runtime_guard: RuntimeGuard::default(),
+        }
+    }
+}
+
+impl Runnable for SlowShutdownController {
+    fn process_start(&self) -> ProcFuture<'_> {
+        Box::pin(async {
+            let ticker = self.runtime_guard.runtime_ticker().await;
+
+            loop {
+                match ticker
+                    .tick(tokio::time::sleep(Duration::from_secs(30)))
+                    .await
+                {
+                    ProcessOperation::Next(_) => continue,
+                    ProcessOperation::Control(RuntimeControlMessage::Shutdown) => {
+                        tokio::time::sleep(self.shutdown_delay).await;
+                        break;
+                    }
+                    ProcessOperation::Control(_) => continue,
+                }
+            }
+
+            Ok(())
+        })
+    }
+
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        self.runtime_guard.handle()
+    }
+}
+
 #[tokio::test]
 async fn test_runnable() {
     let controller = ExampleController::default();
@@ -92,6 +134,34 @@ async fn test_runnable() {
     assert!(
         timeout(Duration::from_secs(5), rx).await.is_ok(),
         "timed out"
+    );
+}
+
+#[tokio::test]
+async fn test_shutdown_waits_for_child_termination() {
+    let mut manager = ProcessManager::new();
+    manager.insert(SlowShutdownController::new(Duration::from_millis(300)));
+
+    let (tx, rx) = channel::<bool>();
+    let handle = manager.process_handle();
+    tokio::spawn(async move {
+        manager.process_start().await.unwrap();
+        tx.send(true).unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let started = tokio::time::Instant::now();
+    handle.shutdown().await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(250),
+        "shutdown returned too early: elapsed={elapsed:?}"
+    );
+    assert!(
+        timeout(Duration::from_secs(2), rx).await.is_ok(),
+        "manager did not terminate after shutdown"
     );
 }
 
