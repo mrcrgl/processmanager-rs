@@ -19,6 +19,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   configuration.
 - `.name("…")` builder method and internal plumbing for custom supervisor
   names.
+- `AGENTS.md` contribution policy with mandatory issue-linked branch naming
+  scheme (`<type>/<issue-id>-<short-kebab-description>`).
 
 ### Changed
 - `process_handle()` now returns `Arc<dyn ProcessControlHandler>` (cheap cloning,
