@@ -1,6 +1,7 @@
 use processmanager::{
     ProcFuture, ProcessControlHandler, ProcessManager, ProcessManagerBuilder, ProcessOperation,
-    RestartBackoff, RestartSupervisor, Runnable, RuntimeControlMessage, RuntimeError, RuntimeGuard,
+    RestartBackoff, RestartSupervisor, Runnable, RunnableWithContext, RuntimeContext,
+    RuntimeControlMessage, RuntimeError, RuntimeGuard, with_runtime_context,
 };
 use std::ops::Add;
 use std::sync::Arc;
@@ -172,6 +173,36 @@ impl FlakyController {
     }
 }
 
+struct ContextController {
+    reloads: Arc<AtomicUsize>,
+}
+
+impl ContextController {
+    fn new(reloads: Arc<AtomicUsize>) -> Self {
+        Self { reloads }
+    }
+}
+
+impl RunnableWithContext for ContextController {
+    fn process_start_with_context(&self, ctx: RuntimeContext) -> ProcFuture<'_> {
+        let reloads = Arc::clone(&self.reloads);
+        Box::pin(async move {
+            loop {
+                match ctx.tick(tokio::time::sleep(Duration::from_secs(30))).await {
+                    ProcessOperation::Next(_) => continue,
+                    ProcessOperation::Control(RuntimeControlMessage::Shutdown) => break,
+                    ProcessOperation::Control(RuntimeControlMessage::Reload) => {
+                        reloads.fetch_add(1, Ordering::SeqCst);
+                    }
+                    ProcessOperation::Control(_) => continue,
+                }
+            }
+
+            Ok(())
+        })
+    }
+}
+
 impl Runnable for FlakyController {
     fn process_start(&self) -> ProcFuture<'_> {
         Box::pin(async {
@@ -298,6 +329,33 @@ async fn test_runnable() {
         timeout(Duration::from_secs(5), rx).await.is_ok(),
         "timed out"
     );
+}
+
+#[tokio::test]
+async fn test_runnable_with_context_works_without_runtime_guard_field() {
+    let reloads = Arc::new(AtomicUsize::new(0));
+    let mut manager = ProcessManager::new();
+    manager.insert(with_runtime_context(ContextController::new(Arc::clone(
+        &reloads,
+    ))));
+
+    let (tx, rx) = channel::<bool>();
+    let handle = manager.process_handle();
+    tokio::spawn(async move {
+        manager.process_start().await.unwrap();
+        tx.send(true).unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    handle.reload().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    handle.shutdown().await;
+
+    assert!(
+        timeout(Duration::from_secs(2), rx).await.is_ok(),
+        "manager did not terminate after shutdown"
+    );
+    assert_eq!(reloads.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
