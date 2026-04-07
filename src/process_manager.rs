@@ -153,7 +153,9 @@ impl ProcessManager {
     /// Adds a child **while the manager is already running**.
     ///
     /// The new `Runnable` is spawned immediately in its own Tokio task.
-    /// Calling this method **before** start-up is equivalent to [`insert`].
+    ///
+    /// # Panics
+    /// Panics if called before start-up. Use [`insert`] during setup.
     pub fn add(&self, process: impl Runnable) {
         let proc: Arc<dyn Runnable> = Arc::from(Box::new(process) as Box<dyn Runnable>);
 
