@@ -13,6 +13,7 @@
 //! future **without** touching the public API of [`ProcessManager`].
 use crate::{ProcessManager, Runnable};
 use std::borrow::Cow;
+use std::time::Duration;
 
 type BoxedInitializer = Box<dyn FnOnce(&mut ProcessManager) + Send>;
 
@@ -37,6 +38,8 @@ pub struct ProcessManagerBuilder {
     auto_cleanup: bool,
     /// Optional custom name for the supervisor.
     custom_name: Option<Cow<'static, str>>,
+    /// Optional grace period before children are force-aborted on shutdown.
+    shutdown_grace_period: Option<Duration>,
     /// Deferred actions that will be executed against the manager right before
     /// it is returned to the caller.
     initializers: Vec<BoxedInitializer>,
@@ -57,6 +60,12 @@ impl ProcessManagerBuilder {
     /// Set a custom human-readable name for the supervisor.
     pub fn name<S: Into<Cow<'static, str>>>(mut self, name: S) -> Self {
         self.custom_name = Some(name.into());
+        self
+    }
+
+    /// Set the shutdown grace period used before force-aborting child tasks.
+    pub fn shutdown_grace_period(mut self, duration: Duration) -> Self {
+        self.shutdown_grace_period = Some(duration);
         self
     }
 
@@ -82,6 +91,9 @@ impl ProcessManagerBuilder {
 
         // Apply configuration knobs that require direct field access.
         mgr.custom_name = self.custom_name;
+        if let Some(duration) = self.shutdown_grace_period {
+            mgr.set_shutdown_grace_period(duration);
+        }
 
         // Run all queued initialisers (child registrations, …).
         for init in self.initializers {
