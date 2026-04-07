@@ -313,6 +313,22 @@ async fn test_runtime_handle_custom_control_message_is_delivered() {
     }
 }
 
+#[test]
+fn test_runtime_control_message_custom_clone_is_safe() {
+    let msg = RuntimeControlMessage::Custom(Arc::new(7_u8));
+    let cloned = msg.clone();
+
+    match cloned {
+        RuntimeControlMessage::Custom(payload) => {
+            let value = payload
+                .downcast::<u8>()
+                .expect("expected u8 custom payload");
+            assert_eq!(*value, 7_u8);
+        }
+        _ => panic!("expected custom control message"),
+    }
+}
+
 #[tokio::test]
 async fn test_reload_dispatch_is_parallel() {
     let mut manager = ProcessManager::new();

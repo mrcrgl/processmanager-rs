@@ -156,7 +156,7 @@ impl RuntimeGuard {
     where
         T: std::any::Any + Send + Sync + 'static,
     {
-        self.control(RuntimeControlMessage::Custom(Box::new(message)))
+        self.control(RuntimeControlMessage::Custom(Arc::new(message)))
     }
 
     /// **Busy-wait** helper for tests and demos.
