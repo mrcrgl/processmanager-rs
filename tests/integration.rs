@@ -285,6 +285,44 @@ async fn test_runtime_guard_shutdown_sent_before_ticker_is_not_lost() {
 }
 
 #[tokio::test]
+async fn test_runtime_guard_supports_restart_after_ticker_drop() {
+    let guard = RuntimeGuard::default();
+    let handle = guard.handle();
+
+    // First start/stop cycle.
+    let first = guard.runtime_ticker().await;
+    handle.shutdown().await;
+    let first_op = timeout(
+        Duration::from_secs(1),
+        first.tick(tokio::time::sleep(Duration::from_secs(5))),
+    )
+    .await
+    .expect("timed out waiting for first shutdown");
+    assert!(matches!(
+        first_op,
+        ProcessOperation::Control(RuntimeControlMessage::Shutdown)
+    ));
+    drop(first);
+
+    // Send control while no ticker is alive. This must not kill fanout and
+    // must be delivered when the next ticker starts.
+    handle.shutdown().await;
+
+    // Second start/stop cycle using the same RuntimeGuard.
+    let second = guard.runtime_ticker().await;
+    let second_op = timeout(
+        Duration::from_secs(1),
+        second.tick(tokio::time::sleep(Duration::from_secs(5))),
+    )
+    .await
+    .expect("timed out waiting for second shutdown");
+    assert!(matches!(
+        second_op,
+        ProcessOperation::Control(RuntimeControlMessage::Shutdown)
+    ));
+}
+
+#[tokio::test]
 async fn test_runtime_handle_custom_control_message_is_delivered() {
     let guard = RuntimeGuard::default();
     let handle = guard.handle();
@@ -310,6 +348,27 @@ async fn test_runtime_handle_custom_control_message_is_delivered() {
             assert_eq!(*value, 42_u32);
         }
         _ => panic!("expected custom control message"),
+    }
+}
+
+#[tokio::test]
+async fn test_runnable_can_restart_start_shutdown_start() {
+    let controller = Arc::new(ExampleController::default());
+    let handle = controller.process_handle();
+
+    for _ in 0..2 {
+        let runnable = Arc::clone(&controller);
+        let join = tokio::spawn(async move {
+            runnable.process_start().await.unwrap();
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        handle.shutdown().await;
+
+        timeout(Duration::from_secs(2), join)
+            .await
+            .expect("timed out waiting for runnable shutdown")
+            .expect("runnable task failed");
     }
 }
 
