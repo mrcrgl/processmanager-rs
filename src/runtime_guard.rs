@@ -40,7 +40,7 @@
 //! ```
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use crate::{ProcessControlHandler, RuntimeControlMessage, RuntimeHandle, RuntimeTicker};
 
@@ -53,6 +53,23 @@ pub struct RuntimeGuard {
 struct Inner {
     runtime_ticker_ch_sender: Arc<Mutex<Option<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>>,
     control_ch_sender: Arc<Mutex<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>,
+    ticker_ready: Arc<Notify>,
+}
+
+async fn wait_for_ticker_sender(
+    sender_slot: Arc<Mutex<Option<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>>,
+    ticker_ready: Arc<Notify>,
+) -> tokio::sync::mpsc::Sender<RuntimeControlMessage> {
+    loop {
+        // Register interest before checking state to avoid missing notifications.
+        let notified = ticker_ready.notified();
+
+        if let Some(sender) = sender_slot.lock().await.clone() {
+            return sender;
+        }
+
+        notified.await;
+    }
 }
 
 impl RuntimeGuard {
@@ -65,20 +82,21 @@ impl RuntimeGuard {
 
         let ticker_sender: Arc<Mutex<Option<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>> =
             Arc::new(Mutex::new(None));
+        let ticker_ready = Arc::new(Notify::new());
 
         let fanout_sender = Arc::clone(&ticker_sender);
+        let fanout_ready = Arc::clone(&ticker_ready);
 
         // Fan-out task: forward messages from the central control channel to
         // the (single) ticker once it has been created.
         tokio::spawn(async move {
             while let Some(msg) = receiver.recv().await {
-                let lock = fanout_sender.lock().await;
-                if let Some(ref s) = *lock {
-                    if s.send(msg).await.is_err() {
-                        break; // ticker dropped
-                    }
-                } else {
-                    ::tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                let ticker =
+                    wait_for_ticker_sender(Arc::clone(&fanout_sender), Arc::clone(&fanout_ready))
+                        .await;
+
+                if ticker.send(msg).await.is_err() {
+                    break; // ticker dropped
                 }
             }
         });
@@ -87,6 +105,7 @@ impl RuntimeGuard {
             inner: Arc::new(Inner {
                 runtime_ticker_ch_sender: ticker_sender,
                 control_ch_sender: Arc::new(Mutex::new(sender)),
+                ticker_ready,
             }),
         }
     }
@@ -105,6 +124,7 @@ impl RuntimeGuard {
         let mut lock = self.inner.runtime_ticker_ch_sender.lock().await;
         let (ticker, sender) = RuntimeTicker::new();
         lock.replace(sender);
+        self.inner.ticker_ready.notify_waiters();
         ticker
     }
 

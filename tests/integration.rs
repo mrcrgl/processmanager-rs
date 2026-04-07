@@ -96,6 +96,32 @@ async fn test_runnable() {
 }
 
 #[tokio::test]
+async fn test_runtime_guard_shutdown_sent_before_ticker_is_not_lost() {
+    let guard = RuntimeGuard::default();
+    let handle = guard.handle();
+
+    // Send shutdown before the ticker is created.
+    handle.shutdown().await;
+
+    let ticker = guard.runtime_ticker().await;
+
+    let op = timeout(
+        Duration::from_secs(1),
+        ticker.tick(tokio::time::sleep(Duration::from_secs(5))),
+    )
+    .await
+    .expect("timed out waiting for queued shutdown message");
+
+    assert!(
+        matches!(
+            op,
+            ProcessOperation::Control(RuntimeControlMessage::Shutdown)
+        ),
+        "expected shutdown control message, got different operation"
+    );
+}
+
+#[tokio::test]
 async fn test_process_runnable() {
     let controller = ExampleController::default();
     let mut manager = ProcessManager::new();

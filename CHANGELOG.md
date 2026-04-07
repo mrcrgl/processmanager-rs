@@ -38,6 +38,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 - Active-child counter accuracy under edge conditions (spawn panics).
 - Numerous doc examples updated for new APIs.
+- Runtime control messages sent before ticker initialization are now retained
+  and delivered once the ticker is created (`#24`).
 
 ### Removed
 - Unused aliases and imports producing compiler warnings.
