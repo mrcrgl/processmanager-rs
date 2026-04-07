@@ -1,6 +1,6 @@
 use processmanager::{
     ProcFuture, ProcessControlHandler, ProcessManager, ProcessManagerBuilder, ProcessOperation,
-    RestartBackoff, RestartWrapper, Runnable, RuntimeControlMessage, RuntimeError, RuntimeGuard,
+    RestartBackoff, RestartSupervisor, Runnable, RuntimeControlMessage, RuntimeError, RuntimeGuard,
 };
 use std::ops::Add;
 use std::sync::Arc;
@@ -491,9 +491,9 @@ async fn test_reload_dispatch_is_parallel() {
 }
 
 #[tokio::test]
-async fn test_restart_wrapper_restarts_failed_child_with_backoff() {
+async fn test_restart_supervisor_restarts_failed_child_with_backoff() {
     let attempts = Arc::new(AtomicUsize::new(0));
-    let wrapper = RestartWrapper::new(FlakyController::new(2, Arc::clone(&attempts))).backoff(
+    let wrapper = RestartSupervisor::new(FlakyController::new(2, Arc::clone(&attempts))).backoff(
         RestartBackoff::new(Duration::from_millis(60), Duration::from_millis(200), 2),
     );
 
@@ -509,10 +509,10 @@ async fn test_restart_wrapper_restarts_failed_child_with_backoff() {
 }
 
 #[tokio::test]
-async fn test_restart_wrapper_shutdown_interrupts_backoff() {
+async fn test_restart_supervisor_shutdown_interrupts_backoff() {
     let attempts = Arc::new(AtomicUsize::new(0));
     let wrapper = Arc::new(
-        RestartWrapper::new(AlwaysFailController::new(Arc::clone(&attempts))).backoff(
+        RestartSupervisor::new(AlwaysFailController::new(Arc::clone(&attempts))).backoff(
             RestartBackoff::new(Duration::from_secs(5), Duration::from_secs(5), 2),
         ),
     );

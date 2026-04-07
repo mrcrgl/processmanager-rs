@@ -1,7 +1,7 @@
-//! Restart wrapper for flaky child processes.
+//! Restart supervisor for flaky child processes.
 //!
-//! `RestartWrapper` supervises one child [`Runnable`]. When the child exits
-//! with an error (or panics), the wrapper restarts it after an exponential
+//! `RestartSupervisor` supervises one child [`Runnable`]. When the child exits
+//! with an error (or panics), the supervisor restarts it after an exponential
 //! backoff delay.
 //!
 //! This is useful for services that should auto-recover from transient
@@ -13,7 +13,7 @@ use crate::{
     RuntimeError, RuntimeGuard,
 };
 
-/// Exponential backoff settings for [`RestartWrapper`].
+/// Exponential backoff settings for [`RestartSupervisor`].
 #[derive(Debug, Clone, Copy)]
 pub struct RestartBackoff {
     /// Delay used after the first failure.
@@ -60,7 +60,7 @@ impl Default for RestartBackoff {
 }
 
 /// Wraps one child [`Runnable`] and restarts it after failures with backoff.
-pub struct RestartWrapper {
+pub struct RestartSupervisor {
     child: Arc<dyn Runnable>,
     child_handle: Arc<dyn ProcessControlHandler>,
     runtime_guard: RuntimeGuard,
@@ -68,7 +68,7 @@ pub struct RestartWrapper {
     control_poll: Duration,
 }
 
-impl RestartWrapper {
+impl RestartSupervisor {
     pub fn new(child: impl Runnable) -> Self {
         let child: Arc<dyn Runnable> = Arc::from(Box::new(child) as Box<dyn Runnable>);
         let child_handle = child.process_handle();
@@ -87,7 +87,7 @@ impl RestartWrapper {
     }
 }
 
-impl Runnable for RestartWrapper {
+impl Runnable for RestartSupervisor {
     fn process_start(&self) -> ProcFuture<'_> {
         let child = Arc::clone(&self.child);
         let child_handle = Arc::clone(&self.child_handle);
@@ -128,13 +128,13 @@ impl Runnable for RestartWrapper {
 
                 let failure = match child_result {
                     Ok(Ok(())) => {
-                        // Child stopped successfully; wrapper also exits successfully.
+                        // Child stopped successfully; supervisor also exits successfully.
                         return Ok(());
                     }
                     Ok(Err(err)) => err,
                     Err(join_err) => RuntimeError::Internal {
                         message: format!(
-                            "restart wrapper child `{child_name}` join failure: {join_err}"
+                            "restart supervisor child `{child_name}` join failure: {join_err}"
                         ),
                     },
                 };
@@ -177,6 +177,9 @@ impl Runnable for RestartWrapper {
     }
 
     fn process_name(&self) -> Cow<'static, str> {
-        Cow::Borrowed("RestartWrapper")
+        Cow::Borrowed("RestartSupervisor")
     }
 }
+
+#[deprecated(note = "use `RestartSupervisor` instead")]
+pub type RestartWrapper = RestartSupervisor;

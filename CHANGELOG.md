@@ -40,10 +40,10 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   shutdown grace timeout instead of relying on a fixed 30s value (`#17`).
 - `ProcessManager::add` docs now match runtime behavior: calling `add` before
   startup panics and `insert` must be used during setup (`#26`).
-- CI now executes `simple` and `dynamic_add` examples with bounded runtimes to
-  catch regressions in sample programs (`#37`).
-- Added `RestartWrapper` with configurable exponential backoff to automatically
-  restart failed child runnables (`#19`).
+- CI now executes `simple`, `dynamic_add`, and `restart_supervisor` examples
+  with bounded runtimes to catch regressions in sample programs (`#37`).
+- Added `RestartSupervisor` with configurable exponential backoff to
+  automatically restart failed child runnables (`#19`).
 
 ### Fixed
 - Active-child counter accuracy under edge conditions (spawn panics).
