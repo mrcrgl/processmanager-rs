@@ -23,6 +23,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   scheme (`<type>/<issue-id>-<short-kebab-description>`).
 - `AGENTS.md` PR title convention (no coding-agent/tool tags) and mandatory
   `git pull --ff-only origin main` before branch creation (`#32`).
+- Regression test coverage for runtime coordination contracts now explicitly
+  includes the `add()` pre-start panic behavior (`#28`).
 - `RunnableWithContext`, `RuntimeContext`, and
   `with_runtime_context(...)` so runnables can consume runtime
   control/ticker context without carrying a `RuntimeGuard` field (`#21`).
