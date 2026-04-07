@@ -49,3 +49,8 @@ jobs:
 
       - name: Run tests (no default features)
         run: cargo test --no-default-features
+
+      - name: Run examples
+        run: |
+          timeout 30s cargo run --example simple
+          timeout 45s cargo run --example dynamic_add
