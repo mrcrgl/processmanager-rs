@@ -64,7 +64,9 @@ async fn wait_for_ticker_sender(
         // Register interest before checking state to avoid missing notifications.
         let notified = ticker_ready.notified();
 
-        if let Some(sender) = sender_slot.lock().await.clone() {
+        if let Some(sender) = sender_slot.lock().await.clone()
+            && !sender.is_closed()
+        {
             return sender;
         }
 
@@ -91,12 +93,22 @@ impl RuntimeGuard {
         // the (single) ticker once it has been created.
         tokio::spawn(async move {
             while let Some(msg) = receiver.recv().await {
-                let ticker =
-                    wait_for_ticker_sender(Arc::clone(&fanout_sender), Arc::clone(&fanout_ready))
-                        .await;
+                let mut pending = msg;
+                loop {
+                    let ticker = wait_for_ticker_sender(
+                        Arc::clone(&fanout_sender),
+                        Arc::clone(&fanout_ready),
+                    )
+                    .await;
 
-                if ticker.send(msg).await.is_err() {
-                    break; // ticker dropped
+                    match ticker.send(pending).await {
+                        Ok(_) => break,
+                        Err(err) => {
+                            // Ticker may have dropped between readiness check and send.
+                            // Keep the message and retry once a new ticker is available.
+                            pending = err.0;
+                        }
+                    }
                 }
             }
         });
