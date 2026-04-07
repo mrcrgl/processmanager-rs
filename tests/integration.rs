@@ -1,6 +1,6 @@
 use processmanager::{
-    ProcFuture, ProcessControlHandler, ProcessManager, ProcessOperation, Runnable,
-    RuntimeControlMessage, RuntimeError, RuntimeGuard,
+    ProcFuture, ProcessControlHandler, ProcessManager, ProcessManagerBuilder, ProcessOperation,
+    Runnable, RuntimeControlMessage, RuntimeError, RuntimeGuard,
 };
 use std::ops::Add;
 use std::sync::Arc;
@@ -152,6 +152,34 @@ impl Runnable for SlowReloadController {
     }
 }
 
+#[derive(Default)]
+struct IgnoreShutdownController {
+    runtime_guard: RuntimeGuard,
+}
+
+impl Runnable for IgnoreShutdownController {
+    fn process_start(&self) -> ProcFuture<'_> {
+        Box::pin(async {
+            let ticker = self.runtime_guard.runtime_ticker().await;
+
+            loop {
+                match ticker
+                    .tick(tokio::time::sleep(Duration::from_secs(30)))
+                    .await
+                {
+                    ProcessOperation::Next(_) => continue,
+                    ProcessOperation::Control(RuntimeControlMessage::Shutdown) => continue,
+                    ProcessOperation::Control(_) => continue,
+                }
+            }
+        })
+    }
+
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        self.runtime_guard.handle()
+    }
+}
+
 impl Runnable for SlowShutdownController {
     fn process_start(&self) -> ProcFuture<'_> {
         Box::pin(async {
@@ -286,6 +314,32 @@ async fn test_reload_dispatch_is_parallel() {
         timeout(Duration::from_secs(2), rx).await.is_ok(),
         "manager did not terminate after shutdown"
     );
+}
+
+#[tokio::test]
+async fn test_shutdown_grace_period_is_configurable() {
+    let manager = ProcessManagerBuilder::default()
+        .shutdown_grace_period(Duration::from_millis(100))
+        .pre_insert(IgnoreShutdownController::default())
+        .build();
+
+    let handle = manager.process_handle();
+    let manager_task = tokio::task::spawn(async move {
+        let _ = manager.process_start().await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let started = tokio::time::Instant::now();
+    handle.shutdown().await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(50) && elapsed < Duration::from_millis(600),
+        "expected shutdown to honor short configured grace period, got elapsed={elapsed:?}"
+    );
+
+    manager_task.abort();
 }
 
 #[tokio::test]

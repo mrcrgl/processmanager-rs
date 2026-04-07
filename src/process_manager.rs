@@ -83,6 +83,7 @@ struct Inner {
     // supervisor RECEIVES from here, children (spawn_child) only send
     completion_tx: mpsc::UnboundedSender<(usize, Result<(), RuntimeError>)>,
     completion_rx: OnceCell<ProcessCompletionChannel>,
+    shutdown_grace_period: Duration,
 }
 
 /// Groups several [`Runnable`] instances and starts / stops them as a unit.
@@ -131,10 +132,23 @@ impl ProcessManager {
                     let _ = cell.set(tokio::sync::Mutex::new(rx));
                     cell
                 },
+                shutdown_grace_period: Duration::from_secs(30),
             }),
             custom_name: None,
             auto_cleanup: true,
         }
+    }
+
+    /// Return the grace period used before force-aborting children during
+    /// shutdown.
+    pub fn shutdown_grace_period(&self) -> Duration {
+        self.inner.shutdown_grace_period
+    }
+
+    pub(crate) fn set_shutdown_grace_period(&mut self, duration: Duration) {
+        let inner = Arc::get_mut(&mut self.inner)
+            .expect("inner must be uniquely owned during manager setup");
+        inner.shutdown_grace_period = duration;
     }
 
     /// Registers a child **before** the supervisor itself is started.
@@ -357,6 +371,7 @@ impl ProcessControlHandler for Handle {
                     })
                     .collect::<Vec<_>>()
             };
+            let shutdown_grace_period = inner.shutdown_grace_period;
 
             for (name, h, jh) in handles {
                 set.spawn(async move {
@@ -367,7 +382,7 @@ impl ProcessControlHandler for Handle {
                     #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
                     eprintln!("Initiate shutdown {name}");
 
-                    let dur = Duration::from_secs(30);
+                    let dur = shutdown_grace_period;
                     let now = Instant::now();
                     let watched = Arc::clone(&jh);
 

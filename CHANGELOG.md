@@ -36,6 +36,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 - All examples, doctests and integration tests migrated to the builder API
   (no more deprecation warnings in user-facing code).
 - Internal channels refactored to remove extra locks (use of `OnceCell`).
+- `ProcessManagerBuilder::shutdown_grace_period(...)` now allows configuring
+  shutdown grace timeout instead of relying on a fixed 30s value (`#17`).
 - `ProcessManager::add` docs now match runtime behavior: calling `add` before
   startup panics and `insert` must be used during setup (`#26`).
 - CI now executes `simple` and `dynamic_add` examples with bounded runtimes to

@@ -5,6 +5,7 @@
 //! expected.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use processmanager::{
     CtrlFuture, ProcFuture, ProcessControlHandler, ProcessManagerBuilder, Runnable, RuntimeError,
@@ -49,4 +50,14 @@ fn builder_sets_custom_name() {
         .build();
 
     assert_eq!(mgr.process_name(), "my-supervisor");
+}
+
+#[test]
+fn builder_sets_shutdown_grace_period() {
+    let mgr = ProcessManagerBuilder::default()
+        .shutdown_grace_period(Duration::from_millis(250))
+        .pre_insert(NoopSvc)
+        .build();
+
+    assert_eq!(mgr.shutdown_grace_period(), Duration::from_millis(250));
 }
