@@ -30,6 +30,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   control/ticker context without carrying a `RuntimeGuard` field (`#21`).
 - New `axum` example showing how to run a web server under `ProcessManager`
   with graceful shutdown and reload handling (`#11`).
+- Release process documentation and release issue template for standardized
+  versioned publish workflows (`#47`).
 
 ### Changed
 - `process_handle()` now returns `Arc<dyn ProcessControlHandler>` (cheap cloning,
@@ -53,6 +55,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   context-based runnable API covered (`#21`).
 - CI now executes the `axum` example to keep web-framework integration sample
   code validated (`#11`).
+- Added tag-driven `Release` workflow to validate, publish to crates.io, and
+  create GitHub releases from changelog sections (`#47`).
 - Added `RestartSupervisor` with configurable exponential backoff to
   automatically restart failed child runnables (`#19`).
 
