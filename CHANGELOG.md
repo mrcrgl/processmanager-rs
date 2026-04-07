@@ -42,6 +42,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 - Numerous doc examples updated for new APIs.
 - Runtime control messages sent before ticker initialization are now retained
   and delivered once the ticker is created (`#24`).
+- `ProcessManager` shutdown now waits for child task termination before
+  returning; children are aborted after grace timeout (`#23`).
 
 ### Removed
 - Unused aliases and imports producing compiler warnings.

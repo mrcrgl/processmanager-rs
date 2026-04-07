@@ -367,12 +367,22 @@ impl ProcessControlHandler for Handle {
 
                     let dur = Duration::from_secs(30);
                     let now = Instant::now();
-                    let timeout = tokio::time::timeout(dur, h.shutdown()).await;
+                    let watched = Arc::clone(&jh);
+
+                    let timeout = tokio::time::timeout(dur, async move {
+                        // Ask the child to shut down first.
+                        h.shutdown().await;
+
+                        // Then wait until the underlying task has actually finished.
+                        while !watched.is_finished() {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    })
+                    .await;
                     let _elapsed = now.elapsed();
 
                     match timeout {
                         Ok(_) => {
-                            // Shutdown ok
                             #[cfg(feature = "tracing")]
                             ::tracing::info!(name = %name, elapsed = ?_elapsed, "Shutdown completed");
                             #[cfg(all(not(feature = "tracing"), feature = "log"))]
@@ -382,7 +392,6 @@ impl ProcessControlHandler for Handle {
                         }
                         Err(_) => {
                             jh.abort();
-                            // Timed out.
                             #[cfg(feature = "tracing")]
                             ::tracing::info!(name = %name, elapsed = ?_elapsed, "Shutdown timed out");
                             #[cfg(all(not(feature = "tracing"), feature = "log"))]
