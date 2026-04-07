@@ -300,6 +300,30 @@ async fn test_runnable() {
     );
 }
 
+#[test]
+fn test_add_before_start_panics_with_contract_message() {
+    let manager = ProcessManager::new();
+    let attempts = Arc::new(AtomicUsize::new(0));
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        manager.add(FlakyController::new(0, Arc::clone(&attempts)));
+    }))
+    .expect_err("add() before startup must panic");
+
+    let message = if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_owned()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_owned()
+    };
+
+    assert!(
+        message.contains("cannot call add() before manager has started"),
+        "unexpected panic message: {message}"
+    );
+}
+
 #[tokio::test]
 async fn test_shutdown_waits_for_child_termination() {
     let mut manager = ProcessManager::new();

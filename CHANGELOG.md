@@ -23,6 +23,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   scheme (`<type>/<issue-id>-<short-kebab-description>`).
 - `AGENTS.md` PR title convention (no coding-agent/tool tags) and mandatory
   `git pull --ff-only origin main` before branch creation (`#32`).
+- Regression test coverage for runtime coordination contracts now explicitly
+  includes the `add()` pre-start panic behavior (`#28`).
 
 ### Changed
 - `process_handle()` now returns `Arc<dyn ProcessControlHandler>` (cheap cloning,
