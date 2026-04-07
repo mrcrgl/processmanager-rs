@@ -38,6 +38,10 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 - Internal channels refactored to remove extra locks (use of `OnceCell`).
 - `ProcessManagerBuilder::shutdown_grace_period(...)` now allows configuring
   shutdown grace timeout instead of relying on a fixed 30s value (`#17`).
+- `ProcessManager::add` docs now match runtime behavior: calling `add` before
+  startup panics and `insert` must be used during setup (`#26`).
+- CI now executes `simple` and `dynamic_add` examples with bounded runtimes to
+  catch regressions in sample programs (`#37`).
 
 ### Fixed
 - Active-child counter accuracy under edge conditions (spawn panics).
