@@ -44,6 +44,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   and delivered once the ticker is created (`#24`).
 - `ProcessManager` shutdown now waits for child task termination before
   returning; children are aborted after grace timeout (`#23`).
+- `ProcessManager` reload fanout now dispatches in parallel, matching documented
+  behavior (`#25`).
 
 ### Removed
 - Unused aliases and imports producing compiler warnings.

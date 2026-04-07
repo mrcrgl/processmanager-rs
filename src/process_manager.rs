@@ -412,14 +412,19 @@ impl ProcessControlHandler for Handle {
     fn reload(&self) -> CtrlFuture<'_> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
+            let mut set = JoinSet::new();
+
             let handles = {
                 let guard = inner.handles.lock().unwrap();
                 guard.clone()
             };
 
             for h in handles {
-                h.reload().await;
+                set.spawn(async move {
+                    h.reload().await;
+                });
             }
+            let _ = set.join_all().await;
         })
     }
 }
