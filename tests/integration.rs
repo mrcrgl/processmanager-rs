@@ -1,9 +1,10 @@
 use processmanager::{
     ProcFuture, ProcessControlHandler, ProcessManager, ProcessManagerBuilder, ProcessOperation,
-    Runnable, RuntimeControlMessage, RuntimeError, RuntimeGuard,
+    RestartBackoff, RestartWrapper, Runnable, RuntimeControlMessage, RuntimeError, RuntimeGuard,
 };
 use std::ops::Add;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::oneshot::channel;
 use tokio::time::timeout;
@@ -155,6 +156,75 @@ impl Runnable for SlowReloadController {
 #[derive(Default)]
 struct IgnoreShutdownController {
     runtime_guard: RuntimeGuard,
+}
+
+struct FlakyController {
+    fail_until_attempt: usize,
+    attempts: Arc<AtomicUsize>,
+}
+
+impl FlakyController {
+    fn new(failures: usize, attempts: Arc<AtomicUsize>) -> Self {
+        Self {
+            fail_until_attempt: failures,
+            attempts,
+        }
+    }
+}
+
+impl Runnable for FlakyController {
+    fn process_start(&self) -> ProcFuture<'_> {
+        Box::pin(async {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            if attempt <= self.fail_until_attempt {
+                return Err(RuntimeError::Internal {
+                    message: format!("intentional failure on attempt {attempt}"),
+                });
+            }
+            Ok(())
+        })
+    }
+
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        Arc::new(StubControlHandle)
+    }
+}
+
+struct AlwaysFailController {
+    attempts: Arc<AtomicUsize>,
+}
+
+impl AlwaysFailController {
+    fn new(attempts: Arc<AtomicUsize>) -> Self {
+        Self { attempts }
+    }
+}
+
+impl Runnable for AlwaysFailController {
+    fn process_start(&self) -> ProcFuture<'_> {
+        Box::pin(async {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            Err(RuntimeError::Internal {
+                message: "intentional permanent failure".to_string(),
+            })
+        })
+    }
+
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        Arc::new(StubControlHandle)
+    }
+}
+
+struct StubControlHandle;
+
+impl ProcessControlHandler for StubControlHandle {
+    fn shutdown(&self) -> processmanager::CtrlFuture<'_> {
+        Box::pin(async {})
+    }
+
+    fn reload(&self) -> processmanager::CtrlFuture<'_> {
+        Box::pin(async {})
+    }
 }
 
 impl Runnable for IgnoreShutdownController {
@@ -417,6 +487,61 @@ async fn test_reload_dispatch_is_parallel() {
     assert!(
         timeout(Duration::from_secs(2), rx).await.is_ok(),
         "manager did not terminate after shutdown"
+    );
+}
+
+#[tokio::test]
+async fn test_restart_wrapper_restarts_failed_child_with_backoff() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let wrapper = RestartWrapper::new(FlakyController::new(2, Arc::clone(&attempts))).backoff(
+        RestartBackoff::new(Duration::from_millis(60), Duration::from_millis(200), 2),
+    );
+
+    let started = tokio::time::Instant::now();
+    wrapper.process_start().await.unwrap();
+    let elapsed = started.elapsed();
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    assert!(
+        elapsed >= Duration::from_millis(150),
+        "expected visible backoff delay before successful restart, elapsed={elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_restart_wrapper_shutdown_interrupts_backoff() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let wrapper = Arc::new(
+        RestartWrapper::new(AlwaysFailController::new(Arc::clone(&attempts))).backoff(
+            RestartBackoff::new(Duration::from_secs(5), Duration::from_secs(5), 2),
+        ),
+    );
+    let handle = wrapper.process_handle();
+
+    let run = tokio::spawn({
+        let wrapper = Arc::clone(&wrapper);
+        async move { wrapper.process_start().await.unwrap() }
+    });
+
+    // Wait for at least one failed attempt so the wrapper is in backoff.
+    for _ in 0..20 {
+        if attempts.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(attempts.load(Ordering::SeqCst) > 0);
+
+    let started = tokio::time::Instant::now();
+    handle.shutdown().await;
+    timeout(Duration::from_secs(1), run)
+        .await
+        .expect("restart wrapper did not stop promptly after shutdown")
+        .expect("restart wrapper task failed");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "shutdown should interrupt backoff promptly, elapsed={elapsed:?}"
     );
 }
 

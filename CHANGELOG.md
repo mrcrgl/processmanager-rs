@@ -42,6 +42,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   startup panics and `insert` must be used during setup (`#26`).
 - CI now executes `simple` and `dynamic_add` examples with bounded runtimes to
   catch regressions in sample programs (`#37`).
+- Added `RestartWrapper` with configurable exponential backoff to automatically
+  restart failed child runnables (`#19`).
 
 ### Fixed
 - Active-child counter accuracy under edge conditions (spawn panics).
