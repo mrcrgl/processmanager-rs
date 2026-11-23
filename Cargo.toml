@@ -38,7 +38,7 @@ signal-hook-tokio = { version = "0.3", optional = true, features = [
 
 [dev-dependencies]
 axum = "0.8"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 signal-hook = "0.3"

@@ -12,7 +12,7 @@ use std::{
 use futures::FutureExt as _;
 use std::panic::AssertUnwindSafe;
 use tokio::{
-    sync::mpsc,
+    sync::{mpsc, watch},
     task::{JoinHandle, JoinSet},
     time::Instant,
 };
@@ -32,6 +32,9 @@ struct Child {
     proc: Arc<dyn Runnable>,
     handle: Arc<dyn ProcessControlHandler>,
     join_handle: Arc<JoinHandle<()>>,
+    /// Closed (`changed()` returns `Err`) once the child task's future has
+    /// been dropped: it completed, panicked or was aborted.
+    done: watch::Receiver<()>,
     /// Set once a shutdown has been sent to this child, so concurrent or
     /// repeated broadcasts don't send it again.
     shutdown_sent: Arc<AtomicBool>,
@@ -40,11 +43,13 @@ struct Child {
 impl Child {
     fn new(id: usize, proc: Arc<dyn Runnable>, inner: &Arc<Inner>, tx: CompletionSender) -> Self {
         let handle = proc.process_handle();
+        let (join_handle, done) = spawn_child(id, Arc::clone(&proc), Arc::clone(inner), tx);
         Self {
             id,
-            proc: Arc::clone(&proc),
+            proc,
             handle,
-            join_handle: Arc::new(spawn_child(id, proc, Arc::clone(inner), tx)),
+            join_handle: Arc::new(join_handle),
+            done,
             shutdown_sent: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -576,6 +581,7 @@ impl ProcessControlHandler for Handle {
                             child.proc.process_name(),
                             child.handle.clone(),
                             child.join_handle.clone(),
+                            child.done.clone(),
                             !child.shutdown_sent.swap(true, Ordering::SeqCst),
                         )
                     })
@@ -583,7 +589,7 @@ impl ProcessControlHandler for Handle {
             };
             let shutdown_grace_period = inner.shutdown_grace_period;
 
-            for (name, h, jh, send) in handles {
+            for (name, h, jh, mut done, send) in handles {
                 set.spawn(async move {
                     #[cfg(feature = "tracing")]
                     ::tracing::info!(name = %name, "Initiate shutdown");
@@ -594,8 +600,6 @@ impl ProcessControlHandler for Handle {
 
                     let dur = shutdown_grace_period;
                     let now = Instant::now();
-                    let watched = Arc::clone(&jh);
-
                     let timeout = tokio::time::timeout(dur, async move {
                         // Ask the child to shut down first, unless an earlier
                         // broadcast already did.
@@ -603,10 +607,10 @@ impl ProcessControlHandler for Handle {
                             h.shutdown().await;
                         }
 
-                        // Then wait until the underlying task has actually finished.
-                        while !watched.is_finished() {
-                            tokio::time::sleep(Duration::from_millis(10)).await;
-                        }
+                        // Then wait until the underlying task has actually
+                        // finished. Nothing is ever sent on `done`; this
+                        // returns once the task drops the sender.
+                        let _ = done.changed().await;
                     })
                     .await;
                     let _elapsed = now.elapsed();
@@ -726,15 +730,19 @@ fn spawn_child(
     proc: Arc<dyn Runnable>,
     inner: Arc<Inner>,
     tx: CompletionSender,
-) -> JoinHandle<()> {
+) -> (JoinHandle<()>, watch::Receiver<()>) {
     // increment *before* spawning the task – guarantees the counter is in sync
     inner.active.fetch_add(1, Ordering::SeqCst);
     let name = proc.process_name();
     // Created before spawning so that even a task aborted before its first
     // poll still reports completion when its future is dropped.
     let reporter = CompletionReporter::new(id, name.clone(), tx);
+    // Moved into the task: dropped together with its future, however the task
+    // ends, which wakes everyone waiting on the receiver.
+    let (done_tx, done_rx) = watch::channel(());
 
-    tokio::spawn(async move {
+    let join_handle = tokio::spawn(async move {
+        let _done = done_tx;
         // Task already accounted for in the caller.
         #[cfg(feature = "tracing")]
         ::tracing::info!(name = %name, "Start process");
@@ -798,5 +806,6 @@ fn spawn_child(
         }
 
         reporter.complete(res);
-    })
+    });
+    (join_handle, done_rx)
 }
