@@ -67,6 +67,22 @@ struct Child {
     proc: Arc<dyn Runnable>,
     handle: Arc<dyn ProcessControlHandler>,
     join_handle: Arc<JoinHandle<()>>,
+    /// Set once a shutdown has been sent to this child, so concurrent or
+    /// repeated broadcasts don't send it again.
+    shutdown_sent: Arc<AtomicBool>,
+}
+
+impl Child {
+    fn new(id: usize, proc: Arc<dyn Runnable>, inner: &Arc<Inner>) -> Self {
+        let handle = proc.process_handle();
+        Self {
+            id,
+            proc: Arc::clone(&proc),
+            handle,
+            join_handle: Arc::new(spawn_child(id, proc, Arc::clone(inner))),
+            shutdown_sent: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 type ProcessCompletionChannel =
@@ -77,6 +93,10 @@ type ProcessCompletionChannel =
 struct Inner {
     processes: Mutex<Vec<Child>>,
     running: AtomicBool,
+    /// Latched by [`Handle::shutdown`] so that children spawned afterwards
+    /// (pre-start children in `process_start`, or via `add`) are shut down
+    /// too. Reset when `process_start` returns.
+    shutdown_requested: AtomicBool,
     next_id: AtomicUsize,
     active: AtomicUsize,
     // supervisor RECEIVES from here, children (spawn_child) only send
@@ -123,6 +143,7 @@ impl ProcessManager {
             inner: Arc::new(Inner {
                 processes: Mutex::new(Vec::new()),
                 running: AtomicBool::new(false),
+                shutdown_requested: AtomicBool::new(false),
                 next_id: AtomicUsize::new(0),
                 active: AtomicUsize::new(0),
                 completion_tx: tx,
@@ -179,16 +200,19 @@ impl ProcessManager {
 
         // Running → register & spawn immediately.
         let id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
-        let handle = proc.process_handle();
+        self.inner
+            .processes
+            .lock()
+            .unwrap()
+            .push(Child::new(id, proc, &self.inner));
 
-        {
-            let mut guard = self.inner.processes.lock().unwrap();
-            guard.push(Child {
-                id,
-                proc: Arc::clone(&proc),
-                handle,
-                join_handle: Arc::new(spawn_child(id, proc, Arc::clone(&self.inner))),
-            });
+        // A shutdown may have taken its snapshot before this child was
+        // registered; make sure the child is shut down as well.
+        if self.inner.shutdown_requested.load(Ordering::SeqCst) {
+            let handle = Handle {
+                inner: Arc::clone(&self.inner),
+            };
+            tokio::spawn(async move { handle.shutdown().await });
         }
     }
 }
@@ -216,17 +240,18 @@ impl Runnable for ProcessManager {
             /* -- spawn every child registered before start() ---------------- */
             for proc in initial {
                 let id = inner.next_id.fetch_add(1, Ordering::SeqCst);
-                let handle = proc.process_handle();
+                inner
+                    .processes
+                    .lock()
+                    .unwrap()
+                    .push(Child::new(id, proc, &inner));
+            }
 
-                {
-                    let mut g = inner.processes.lock().unwrap();
-                    g.push(Child {
-                        id,
-                        proc: Arc::clone(&proc),
-                        handle,
-                        join_handle: Arc::new(spawn_child(id, proc, Arc::clone(&inner))),
-                    });
-                }
+            // A shutdown requested before (or while) the children were
+            // registered must not be lost: deliver it to every child that
+            // has not received it yet.
+            if inner.shutdown_requested.load(Ordering::SeqCst) {
+                manager_handle.shutdown().await;
             }
 
             /* -- supervisor event-loop -------------------------------------- */
@@ -253,6 +278,7 @@ impl Runnable for ProcessManager {
                 // exit criterion: no active children left
                 if inner.active.load(Ordering::SeqCst) == 0 {
                     inner.running.store(false, Ordering::SeqCst);
+                    inner.shutdown_requested.store(false, Ordering::SeqCst);
                     break;
                 }
 
@@ -275,6 +301,8 @@ impl Runnable for ProcessManager {
                     }
                     None => {
                         // Sender dropped – supervisor should stop.
+                        inner.running.store(false, Ordering::SeqCst);
+                        inner.shutdown_requested.store(false, Ordering::SeqCst);
                         return Err(RuntimeError::Internal {
                             message: "completion channel closed unexpectedly".into(),
                         });
@@ -347,9 +375,18 @@ impl ProcessControlHandler for Handle {
     /// Children whose task has already finished are skipped: nothing drains
     /// their control channel any more, so a send could block until the grace
     /// period expires.
+    ///
+    /// The request is remembered: children spawned afterwards (pre-start
+    /// children when `process_start` runs, or children passed to `add`) are
+    /// shut down as well. Each child receives the shutdown message at most
+    /// once; a repeated call still waits for the children to finish.
     fn shutdown(&self) -> CtrlFuture<'_> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
+            // Latch *before* taking the snapshot: a child registered after the
+            // snapshot then sees the flag (see `process_start` / `add`).
+            inner.shutdown_requested.store(true, Ordering::SeqCst);
+
             let mut set = JoinSet::new();
 
             let handles = {
@@ -362,13 +399,14 @@ impl ProcessControlHandler for Handle {
                             child.proc.process_name(),
                             child.handle.clone(),
                             child.join_handle.clone(),
+                            !child.shutdown_sent.swap(true, Ordering::SeqCst),
                         )
                     })
                     .collect::<Vec<_>>()
             };
             let shutdown_grace_period = inner.shutdown_grace_period;
 
-            for (name, h, jh) in handles {
+            for (name, h, jh, send) in handles {
                 set.spawn(async move {
                     #[cfg(feature = "tracing")]
                     ::tracing::info!(name = %name, "Initiate shutdown");
@@ -382,8 +420,11 @@ impl ProcessControlHandler for Handle {
                     let watched = Arc::clone(&jh);
 
                     let timeout = tokio::time::timeout(dur, async move {
-                        // Ask the child to shut down first.
-                        h.shutdown().await;
+                        // Ask the child to shut down first, unless an earlier
+                        // broadcast already did.
+                        if send {
+                            h.shutdown().await;
+                        }
 
                         // Then wait until the underlying task has actually finished.
                         while !watched.is_finished() {

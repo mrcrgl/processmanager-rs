@@ -1292,3 +1292,152 @@ mod finished_children {
         }
     }
 }
+
+mod early_shutdown {
+    use super::*;
+    use processmanager::IdleProcess;
+
+    #[tokio::test]
+    async fn shutdown_before_start_is_honoured() {
+        let manager = ProcessManagerBuilder::default()
+            .pre_insert(IdleProcess::new())
+            .build();
+        let handle = manager.process_handle();
+
+        timeout(Duration::from_secs(1), handle.shutdown())
+            .await
+            .expect("shutdown with no running children returns at once");
+
+        let result = timeout(Duration::from_secs(2), manager.process_start())
+            .await
+            .expect("process_start must honour a shutdown requested before start");
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn shutdown_racing_start_is_honoured() {
+        for _ in 0..50 {
+            let manager = ProcessManagerBuilder::default()
+                .pre_insert(IdleProcess::new())
+                .build();
+            let handle = manager.process_handle();
+            let run = tokio::spawn(async move { manager.process_start().await });
+
+            // No sleep: race the first poll of process_start.
+            handle.shutdown().await;
+
+            let result = timeout(Duration::from_secs(2), run)
+                .await
+                .expect("shutdown racing start must not be lost")
+                .expect("manager task panicked");
+            assert!(result.is_ok(), "got {result:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_manager_shut_down_before_start_stops() {
+        let inner = ProcessManagerBuilder::default()
+            .pre_insert(IdleProcess::new())
+            .build();
+        inner.process_handle().shutdown().await;
+
+        let outer = ProcessManagerBuilder::default().pre_insert(inner).build();
+        let result = timeout(Duration::from_secs(2), outer.process_start())
+            .await
+            .expect("nested manager must honour its early shutdown");
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn child_added_during_shutdown_is_shut_down() {
+        let manager = Arc::new(
+            ProcessManagerBuilder::default()
+                .shutdown_grace_period(Duration::from_secs(5))
+                // Stops cleanly, but slowly: keeps the shutdown in progress
+                // without producing an error that would trigger a second
+                // shutdown broadcast.
+                .pre_insert(SlowShutdownController::new(Duration::from_millis(300)))
+                .build(),
+        );
+        let handle = manager.process_handle();
+        let run = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            async move { manager.process_start().await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let shutdown = tokio::spawn({
+            let handle = Arc::clone(&handle);
+            async move { handle.shutdown().await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Registered after the shutdown took its snapshot.
+        manager.add(IdleProcess::new());
+
+        let result = timeout(Duration::from_secs(2), run)
+            .await
+            .expect("child added during shutdown must be shut down too")
+            .expect("manager task panicked");
+        assert!(result.is_ok(), "got {result:?}");
+        shutdown.await.expect("shutdown task panicked");
+    }
+
+    /// Delegates to an inner handle and counts `shutdown` calls.
+    struct CountingHandle {
+        inner: Arc<dyn ProcessControlHandler>,
+        shutdowns: Arc<AtomicUsize>,
+    }
+
+    impl ProcessControlHandler for CountingHandle {
+        fn shutdown(&self) -> processmanager::CtrlFuture<'_> {
+            self.shutdowns.fetch_add(1, Ordering::SeqCst);
+            self.inner.shutdown()
+        }
+
+        fn reload(&self) -> processmanager::CtrlFuture<'_> {
+            self.inner.reload()
+        }
+    }
+
+    struct CountedIdle {
+        idle: IdleProcess,
+        shutdowns: Arc<AtomicUsize>,
+    }
+
+    impl Runnable for CountedIdle {
+        fn process_start(&self) -> ProcFuture<'_> {
+            self.idle.process_start()
+        }
+
+        fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+            Arc::new(CountingHandle {
+                inner: self.idle.process_handle(),
+                shutdowns: Arc::clone(&self.shutdowns),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_shutdowns_signal_each_child_once() {
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let manager = ProcessManagerBuilder::default()
+            .pre_insert(CountedIdle {
+                idle: IdleProcess::new(),
+                shutdowns: Arc::clone(&shutdowns),
+            })
+            .build();
+        let handle = manager.process_handle();
+        let run = tokio::spawn(async move { manager.process_start().await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        tokio::join!(handle.shutdown(), handle.shutdown());
+
+        timeout(Duration::from_secs(2), run)
+            .await
+            .expect("manager must stop")
+            .expect("manager task panicked")
+            .expect("clean shutdown");
+        assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
+    }
+}

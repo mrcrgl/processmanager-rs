@@ -23,6 +23,10 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   e.g. `RestartSupervisor(my_crate::Worker)` (`#4`).
 
 ### Fixed
+- A `ProcessManager` shutdown requested before or while `process_start` runs
+  is no longer lost: it is remembered and delivered to children spawned
+  afterwards, including children passed to `add()` during a shutdown. Each
+  child receives the shutdown message at most once (`#62`).
 - `ProcessManagerBuilder` now defaults to `auto_cleanup = true`, as
   documented; it previously defaulted to `false`, so finished children were
   never removed (`#61`).
