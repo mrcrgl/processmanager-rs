@@ -16,14 +16,56 @@
 //! * [`RestartSupervisor::reset_after`] resets the backoff once the child has
 //!   run long enough, so a crash after a long healthy run is restarted quickly
 //!   again.
-use std::{borrow::Cow, collections::VecDeque, sync::Arc, time::Duration};
+//!
+//! The child runs in its own task. If the supervisor is dropped or aborted
+//! (e.g. by a parent manager after its shutdown grace period), that task is
+//! aborted too, so no child outlives its supervisor.
+//!
+//! On shutdown the supervisor forwards the request and waits for the child to
+//! stop, without a time limit of its own. Inside a
+//! [`ProcessManager`](crate::ProcessManager) that wait is bounded by the
+//! manager's shutdown grace period; when used on its own, wrap the
+//! supervisor's future in a timeout.
+use std::{
+    borrow::Cow,
+    collections::VecDeque,
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
 
-use tokio::time::Instant;
+use tokio::{
+    task::{JoinError, JoinHandle},
+    time::Instant,
+};
 
 use crate::{
     ProcFuture, ProcessControlHandler, ProcessOperation, Runnable, RuntimeControlMessage,
     RuntimeError, RuntimeGuard,
 };
+
+/// A [`JoinHandle`] that aborts its task when dropped.
+///
+/// Dropping a plain `JoinHandle` detaches the task; this wrapper makes the
+/// task's lifetime follow the supervisor's future instead.
+struct AbortOnDrop<T>(JoinHandle<T>);
+
+impl<T> Future for AbortOnDrop<T> {
+    type Output = Result<T, JoinError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.0).poll(cx)
+    }
+}
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        // No-op if the task has already finished.
+        self.0.abort();
+    }
+}
 
 /// Exponential backoff settings for [`RestartSupervisor`].
 #[derive(Debug, Clone, Copy)]
@@ -162,10 +204,10 @@ impl Runnable for RestartSupervisor {
 
             loop {
                 let started = Instant::now();
-                let mut child_task = tokio::spawn({
+                let mut child_task = AbortOnDrop(tokio::spawn({
                     let child = Arc::clone(&child);
                     async move { child.process_start().await }
-                });
+                }));
 
                 // Child run-loop. React to control messages while the child is alive.
                 let child_result = loop {
