@@ -71,6 +71,10 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   e.g. `RestartSupervisor(my_crate::Worker)` (`#4`).
 
 ### Fixed
+- A control message that a run of a `RuntimeGuard`-based runnable never read
+  is discarded when the run ends, instead of reaching the next run (e.g. a
+  restarted child under `RestartSupervisor` stopping at once). Messages sent
+  before the first start or between two runs are still delivered (#72).
 - `ProcessManager::process_start` called while the manager is already
   running returns an error instead of re-spawning its children next to the
   running ones (which brought the running manager down). Restarting a stopped

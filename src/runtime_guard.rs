@@ -26,9 +26,11 @@ const CONTROL_CHANNEL_CAPACITY: usize = 2;
 ///   [`block_until_shutdown`](Self::block_until_shutdown) – observe whether a
 ///   ticker is alive, mostly for tests and demos.
 ///
-/// Control messages are buffered until the ticker reads them, so a message
-/// sent before the runnable has started is not lost. The guard spawns no task
-/// and can be created outside a Tokio runtime. Clones share the same state.
+/// Control messages are buffered until a ticker reads them, so a message
+/// sent before the runnable has started (or between two runs) reaches the next
+/// run. Messages a run did not read are discarded when its ticker is dropped,
+/// so they don't leak into a restart. The guard spawns no task and can be
+/// created outside a Tokio runtime. Clones share the same state.
 ///
 /// ```
 /// # use processmanager::*;
@@ -81,7 +83,8 @@ impl RuntimeGuard {
     /// Create the **single** [`RuntimeTicker`].
     ///
     /// Control messages sent before this call (e.g. a shutdown requested before
-    /// the runnable started) are delivered to the new ticker.
+    /// the runnable started) are delivered to the new ticker. Messages the
+    /// previous ticker left unread were discarded when it was dropped.
     ///
     /// # Panics
     /// Panics if a ticker for this guard is still alive – i.e. the runtime is

@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use processmanager::{
     IdleProcess, Job, ProcFuture, ProcessControlHandler, ProcessManagerBuilder, ProcessOperation,
-    RestartSupervisor, Runnable, RunnableWithContext, RuntimeContext, RuntimeGuard,
-    with_runtime_context,
+    RestartSupervisor, Runnable, RunnableWithContext, RuntimeContext, RuntimeControlMessage,
+    RuntimeGuard, with_runtime_context,
 };
 use tokio::time::timeout;
 
@@ -149,4 +149,64 @@ async fn handle_outliving_guard_does_not_hang() {
             .await
             .expect("send to a dropped runtime must not block");
     }
+}
+
+/// #72: a message the previous run never read must not reach the next run,
+/// but one sent between two runs must.
+#[tokio::test]
+async fn unread_messages_do_not_leak_into_the_next_run() {
+    let guard = RuntimeGuard::new();
+    let handle = guard.handle();
+
+    // Run 1 ends without reading the reload sent to it.
+    let ticker = guard.runtime_ticker().await;
+    handle.reload().await;
+    drop(ticker);
+
+    // Run 2 must not see it.
+    let ticker = guard.runtime_ticker().await;
+    match ticker
+        .tick(tokio::time::sleep(Duration::from_millis(50)))
+        .await
+    {
+        ProcessOperation::Next(()) => {}
+        ProcessOperation::Control(msg) => panic!("stale message delivered: {msg:?}"),
+    }
+    drop(ticker);
+
+    // Sent between runs: delivered to run 3.
+    handle.shutdown().await;
+    let ticker = guard.runtime_ticker().await;
+    match timeout(
+        Duration::from_secs(1),
+        ticker.tick(std::future::pending::<()>()),
+    )
+    .await
+    {
+        Ok(ProcessOperation::Control(RuntimeControlMessage::Shutdown)) => {}
+        other => panic!("expected the shutdown sent between runs, got {other:?}"),
+    }
+}
+
+/// Draining also frees the buffer, so a sender blocked on a full buffer of
+/// an ended run does not hang.
+#[tokio::test]
+async fn ending_a_run_unblocks_senders_waiting_on_a_full_buffer() {
+    let guard = RuntimeGuard::new();
+    let handle = guard.handle();
+    let ticker = guard.runtime_ticker().await;
+    handle.reload().await;
+    handle.reload().await; // buffer (2) is full now
+    let blocked = tokio::spawn({
+        let handle = Arc::clone(&handle);
+        async move { handle.reload().await }
+    });
+    tokio::task::yield_now().await;
+    assert!(!blocked.is_finished(), "third send must wait");
+
+    drop(ticker);
+    timeout(Duration::from_secs(1), blocked)
+        .await
+        .expect("sender must be released when the run ends")
+        .unwrap();
 }
