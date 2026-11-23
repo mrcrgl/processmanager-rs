@@ -34,6 +34,9 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   e.g. `RestartSupervisor(my_crate::Worker)` (`#4`).
 
 ### Fixed
+- A child whose `process_start` panics before returning its future is now
+  reported as `process panicked: …` instead of being misreported as aborted
+  after the shutdown grace period (`#71`).
 - `RuntimeGuard` no longer spawns a background task, so `RuntimeGuard::new`
   and the built-ins using it (`IdleProcess`, `Job`, `RestartSupervisor`,
   `SignalReceiver`, `with_runtime_context`) can be constructed outside a
