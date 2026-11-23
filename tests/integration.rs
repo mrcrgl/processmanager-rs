@@ -331,27 +331,28 @@ async fn test_runnable() {
     );
 }
 
-#[test]
-fn test_add_before_start_panics_with_contract_message() {
+#[tokio::test]
+async fn test_add_before_start_is_queued() {
     let manager = ProcessManager::new();
     let attempts = Arc::new(AtomicUsize::new(0));
 
-    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        manager.add(FlakyController::new(0, Arc::clone(&attempts)));
-    }))
-    .expect_err("add() before startup must panic");
+    manager
+        .add(FlakyController::new(0, Arc::clone(&attempts)))
+        .expect("add() before start must queue the child");
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        0,
+        "queued, not started yet"
+    );
 
-    let message = if let Some(s) = panic.downcast_ref::<&str>() {
-        (*s).to_owned()
-    } else if let Some(s) = panic.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "<non-string panic payload>".to_owned()
-    };
-
-    assert!(
-        message.contains("cannot call add() before manager has started"),
-        "unexpected panic message: {message}"
+    timeout(Duration::from_secs(1), manager.process_start())
+        .await
+        .expect("manager must finish after its only child")
+        .expect("child succeeded");
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        1,
+        "queued child ran on start"
     );
 }
 
@@ -1349,7 +1350,7 @@ mod early_shutdown {
     }
 
     #[tokio::test]
-    async fn child_added_during_shutdown_is_shut_down() {
+    async fn add_during_shutdown_is_rejected() {
         let manager = Arc::new(
             ProcessManagerBuilder::default()
                 .shutdown_grace_period(Duration::from_secs(5))
@@ -1372,12 +1373,15 @@ mod early_shutdown {
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // Registered after the shutdown took its snapshot.
-        manager.add(IdleProcess::new());
+        assert_eq!(
+            manager.add(IdleProcess::new()),
+            Err(processmanager::AddError::ShuttingDown),
+            "a shutting-down manager must reject new children"
+        );
 
         let result = timeout(Duration::from_secs(2), run)
             .await
-            .expect("child added during shutdown must be shut down too")
+            .expect("manager must finish its shutdown")
             .expect("manager task panicked");
         assert!(result.is_ok(), "got {result:?}");
         shutdown.await.expect("shutdown task panicked");
@@ -1702,5 +1706,107 @@ mod child_panics {
             }
             other => panic!("expected a panic error, got {other:?}"),
         }
+    }
+}
+
+mod add_contract {
+    use super::*;
+    use processmanager::{AddError, IdleProcess, Job};
+
+    #[tokio::test]
+    async fn add_right_after_spawning_start_never_fails() {
+        for _ in 0..50 {
+            let manager = Arc::new(ProcessManagerBuilder::default().build());
+            let run = tokio::spawn({
+                let manager = Arc::clone(&manager);
+                async move { manager.process_start().await }
+            });
+
+            // Races the first poll of process_start: either queued or spawned.
+            manager
+                .add(IdleProcess::new())
+                .expect("add must succeed until the manager has stopped");
+
+            manager.process_handle().shutdown().await;
+            timeout(Duration::from_secs(2), run)
+                .await
+                .expect("manager must stop")
+                .expect("manager task panicked")
+                .expect("clean shutdown");
+        }
+    }
+
+    #[tokio::test]
+    async fn add_after_stop_is_rejected() {
+        let manager = ProcessManagerBuilder::default()
+            .pre_insert(Job::new("done", || async { Ok(()) }))
+            .build();
+        timeout(Duration::from_secs(1), manager.process_start())
+            .await
+            .expect("manager must finish")
+            .expect("job succeeded");
+
+        assert_eq!(manager.add(IdleProcess::new()), Err(AddError::Stopped));
+    }
+
+    #[tokio::test]
+    async fn add_after_aborted_start_is_rejected() {
+        let manager = ProcessManagerBuilder::default()
+            .pre_insert(IdleProcess::new())
+            .build();
+        // Dropping the future aborts the manager.
+        let _ = timeout(Duration::from_millis(50), manager.process_start()).await;
+
+        assert_eq!(manager.add(IdleProcess::new()), Err(AddError::Stopped));
+    }
+
+    /// An `add` racing the supervisor's exit either keeps the manager
+    /// running (the new child is supervised) or is rejected; the child is
+    /// never orphaned.
+    static ACCEPTED: AtomicUsize = AtomicUsize::new(0);
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn add_racing_exit_is_supervised_or_rejected() {
+        for i in 0..100 {
+            let manager = Arc::new(
+                ProcessManagerBuilder::default()
+                    .pre_insert(Job::new("short", move || async move {
+                        tokio::time::sleep(Duration::from_micros(i * 20)).await;
+                        Ok(())
+                    }))
+                    .build(),
+            );
+            let mut run = tokio::spawn({
+                let manager = Arc::clone(&manager);
+                async move { manager.process_start().await }
+            });
+
+            // Aim the add at the moment the job finishes and the manager exits.
+            tokio::time::sleep(Duration::from_micros(i * 20)).await;
+            let accepted = loop {
+                match manager.add(IdleProcess::new()) {
+                    Ok(()) => break true,
+                    Err(AddError::Stopped) => break false,
+                    Err(other) => panic!("unexpected {other:?}"),
+                }
+            };
+
+            if accepted {
+                ACCEPTED.fetch_add(1, Ordering::SeqCst);
+                // The idle child keeps the manager alive until shut down.
+                assert!(
+                    timeout(Duration::from_millis(20), &mut run).await.is_err(),
+                    "round {i}: manager exited although it accepted a child"
+                );
+                manager.process_handle().shutdown().await;
+            }
+            timeout(Duration::from_secs(2), run)
+                .await
+                .expect("manager must stop")
+                .expect("manager task panicked")
+                .expect("clean shutdown");
+        }
+        let accepted = ACCEPTED.load(Ordering::SeqCst);
+        eprintln!("add racing exit: {accepted}/100 accepted, the rest rejected");
     }
 }

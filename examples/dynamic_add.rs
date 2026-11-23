@@ -92,13 +92,13 @@ async fn main() {
     sleep(Duration::from_secs(3)).await;
 
     println!("==> main: adding worker-1");
-    mgr.add(Worker::new(1));
+    mgr.add(Worker::new(1)).expect("manager is running");
 
     println!("==> main: sleeping 2 s");
     sleep(Duration::from_secs(2)).await;
 
     println!("==> main: adding worker-2");
-    mgr.add(Worker::new(2));
+    mgr.add(Worker::new(2)).expect("manager is running");
 
     // ------------------------------------------------------------------
     // 3. Graceful shutdown after a short delay

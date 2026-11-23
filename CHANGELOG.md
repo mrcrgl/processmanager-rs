@@ -7,6 +7,8 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `AddError` (`Stopped`, `ShuttingDown`), returned by `ProcessManager::add`
+  (`#67`).
 - `ProcessManagerBuilder::handle_signals()` installs a `SignalReceiver` wired
   to its manager: `SIGTERM`/`SIGINT`/`SIGQUIT` shut it down gracefully and
   `SIGHUP` reloads all children (`#64`).
@@ -20,6 +22,11 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   child ran healthily for `duration` (default: 60s) (`#4`).
 
 ### Changed
+- **Breaking:** `ProcessManager::add` now returns `Result<(), AddError>`
+  instead of panicking. Before the manager has started it queues the child
+  (like `insert`); while running it spawns it; it returns
+  `AddError::ShuttingDown` during a shutdown and `AddError::Stopped` once the
+  manager has stopped (`#67`).
 - A child ending with `RuntimeError::TerminationSignal` (e.g. a
   `SignalReceiver` after Ctrl-C) is now treated as a graceful shutdown
   request: the manager stops its other children and returns `Ok(())` instead
@@ -34,6 +41,9 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   e.g. `RestartSupervisor(my_crate::Worker)` (`#4`).
 
 ### Fixed
+- `ProcessManager::add` no longer races the manager's start (an `add` right
+  after spawning `process_start` panicked) or its exit (a child added as the
+  last one finished could be orphaned) (`#67`).
 - A child whose `process_start` panics before returning its future is now
   reported as `process panicked: …` instead of being misreported as aborted
   after the shutdown grace period (`#71`).
