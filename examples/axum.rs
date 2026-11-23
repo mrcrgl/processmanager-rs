@@ -24,17 +24,10 @@ impl RunnableWithContext for AxumServer {
                 .route("/", get(root))
                 .route("/healthz", get(healthz));
 
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .map_err(|err| RuntimeError::Internal {
-                    message: format!("failed to bind axum listener: {err}"),
-                })?;
-
-            let local_addr = listener
-                .local_addr()
-                .map_err(|err| RuntimeError::Internal {
-                    message: format!("failed to read local address: {err}"),
-                })?;
+            // `?` turns `std::io::Error` into `RuntimeError::Failed`, keeping
+            // the typed error (see `RuntimeError::downcast_ref`).
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let local_addr = listener.local_addr()?;
 
             println!("axum server listening on http://{local_addr}");
 
@@ -59,16 +52,8 @@ impl RunnableWithContext for AxumServer {
                 {
                     ProcessOperation::Next(Ok(join_result)) => match join_result {
                         Ok(Ok(())) => return Ok(()),
-                        Ok(Err(err)) => {
-                            return Err(RuntimeError::Internal {
-                                message: format!("axum server stopped with error: {err}"),
-                            });
-                        }
-                        Err(join_err) => {
-                            return Err(RuntimeError::Internal {
-                                message: format!("axum server task join error: {join_err}"),
-                            });
-                        }
+                        Ok(Err(err)) => return Err(err.into()),
+                        Err(join_err) => return Err(RuntimeError::failed(join_err)),
                     },
                     ProcessOperation::Next(Err(_timeout)) => continue,
                     ProcessOperation::Control(RuntimeControlMessage::Shutdown) => {
@@ -78,16 +63,8 @@ impl RunnableWithContext for AxumServer {
 
                         match server_task.await {
                             Ok(Ok(())) => return Ok(()),
-                            Ok(Err(err)) => {
-                                return Err(RuntimeError::Internal {
-                                    message: format!("axum shutdown failed: {err}"),
-                                });
-                            }
-                            Err(join_err) => {
-                                return Err(RuntimeError::Internal {
-                                    message: format!("axum shutdown join error: {join_err}"),
-                                });
-                            }
+                            Ok(Err(err)) => return Err(err.into()),
+                            Err(join_err) => return Err(RuntimeError::failed(join_err)),
                         }
                     }
                     ProcessOperation::Control(RuntimeControlMessage::Reload) => {

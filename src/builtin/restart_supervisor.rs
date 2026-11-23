@@ -67,6 +67,64 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
+/// Returned (as [`RuntimeError::Failed`]) when a [`RestartSupervisor`] gives
+/// up because its child exceeded the
+/// [`restart_limit`](RestartSupervisor::restart_limit).
+///
+/// The child's last error is available as [`source`](std::error::Error::source).
+///
+/// ```
+/// # use processmanager::{RestartLimitExceeded, RuntimeError};
+/// fn gave_up(err: &RuntimeError) -> Option<&RestartLimitExceeded> {
+///     err.downcast_ref::<RestartLimitExceeded>()
+/// }
+/// ```
+#[derive(Debug)]
+pub struct RestartLimitExceeded {
+    child: String,
+    failures: usize,
+    window: Duration,
+    last_error: RuntimeError,
+}
+
+impl RestartLimitExceeded {
+    /// Name of the supervised child.
+    pub fn child(&self) -> &str {
+        &self.child
+    }
+
+    /// Failures counted within [`window`](Self::window).
+    pub fn failures(&self) -> usize {
+        self.failures
+    }
+
+    /// The configured time window.
+    pub fn window(&self) -> Duration {
+        self.window
+    }
+
+    /// The child's last error.
+    pub fn last_error(&self) -> &RuntimeError {
+        &self.last_error
+    }
+}
+
+impl std::fmt::Display for RestartLimitExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "restart supervisor gave up on `{}` after {} failures within {:?}",
+            self.child, self.failures, self.window
+        )
+    }
+}
+
+impl std::error::Error for RestartLimitExceeded {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.last_error)
+    }
+}
+
 /// Exponential backoff settings for [`RestartSupervisor`].
 #[derive(Debug, Clone, Copy)]
 pub struct RestartBackoff {
@@ -162,9 +220,10 @@ impl RestartSupervisor {
     /// within the sliding `window`.
     ///
     /// When the limit is exceeded the supervisor stops restarting and returns
-    /// a [`RuntimeError::Internal`] that names the child and includes its last
-    /// error. Inside a [`ProcessManager`](crate::ProcessManager) this shuts
-    /// down all sibling processes.
+    /// a [`RuntimeError::Failed`] wrapping [`RestartLimitExceeded`], which
+    /// names the child and keeps its last error as `source`. Inside a
+    /// [`ProcessManager`](crate::ProcessManager) this shuts down all sibling
+    /// processes.
     ///
     /// `max_restarts == 0` means the first failure is final. Without this
     /// setting the child is restarted indefinitely.
@@ -235,11 +294,7 @@ impl Runnable for RestartSupervisor {
                         return Ok(());
                     }
                     Ok(Err(err)) => err,
-                    Err(join_err) => RuntimeError::Internal {
-                        message: format!(
-                            "restart supervisor child `{child_name}` join failure: {join_err}"
-                        ),
-                    },
+                    Err(join_err) => RuntimeError::failed(join_err),
                 };
 
                 let now = Instant::now();
@@ -256,13 +311,12 @@ impl Runnable for RestartSupervisor {
                         failure_times.pop_front();
                     }
                     if failure_times.len() > limit.max_restarts as usize {
-                        return Err(RuntimeError::Internal {
-                            message: format!(
-                                "restart supervisor gave up on `{child_name}` after {} failures within {:?}: {failure}",
-                                failure_times.len(),
-                                limit.window
-                            ),
-                        });
+                        return Err(RuntimeError::failed(RestartLimitExceeded {
+                            child: child_name,
+                            failures: failure_times.len(),
+                            window: limit.window,
+                            last_error: failure,
+                        }));
                     }
                 }
 
