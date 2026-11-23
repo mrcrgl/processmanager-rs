@@ -126,7 +126,7 @@ async fn main() {
 | Helper           | Purpose                                                                                                                  | Feature flag |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------ |
 | `IdleProcess`    | Keeps an otherwise empty manager alive until an external shutdown is requested.                                          | —            |
-| `RestartSupervisor` | Wraps a child `Runnable`, restarts it after failures, and applies exponential backoff between retry attempts.        | —            |
+| `RestartSupervisor` | Wraps a child `Runnable`, restarts it after failures with exponential backoff (reset after a healthy run), and can give up after too many failures within a time window (`restart_limit`). | —            |
 | `SignalReceiver` | Listens for `SIGHUP`, `SIGINT`, `SIGTERM`, `SIGQUIT` and converts them into *shutdown / reload* control messages.        | `signal`     |
 
 Enable `SignalReceiver` like this:

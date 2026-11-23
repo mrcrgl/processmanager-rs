@@ -6,7 +6,19 @@
 //!
 //! This is useful for services that should auto-recover from transient
 //! failures.
-use std::{borrow::Cow, sync::Arc, time::Duration};
+//!
+//! Two knobs turn this into a crash policy:
+//!
+//! * [`RestartSupervisor::restart_limit`] gives up once the child fails too
+//!   often within a time window. The supervisor then returns an error, which
+//!   makes a parent [`ProcessManager`](crate::ProcessManager) shut down all
+//!   sibling processes.
+//! * [`RestartSupervisor::reset_after`] resets the backoff once the child has
+//!   run long enough, so a crash after a long healthy run is restarted quickly
+//!   again.
+use std::{borrow::Cow, collections::VecDeque, sync::Arc, time::Duration};
+
+use tokio::time::Instant;
 
 use crate::{
     ProcFuture, ProcessControlHandler, ProcessOperation, Runnable, RuntimeControlMessage,
@@ -59,16 +71,31 @@ impl Default for RestartBackoff {
     }
 }
 
+/// Limit on how often a child may fail within a sliding time window.
+#[derive(Debug, Clone, Copy)]
+struct RestartLimit {
+    max_restarts: u32,
+    window: Duration,
+}
+
+/// Default for [`RestartSupervisor::reset_after`].
+const DEFAULT_RESET_AFTER: Duration = Duration::from_secs(60);
+
 /// Wraps one child [`Runnable`] and restarts it after failures with backoff.
 pub struct RestartSupervisor {
     child: Arc<dyn Runnable>,
     child_handle: Arc<dyn ProcessControlHandler>,
     runtime_guard: RuntimeGuard,
     backoff: RestartBackoff,
+    restart_limit: Option<RestartLimit>,
+    reset_after: Duration,
     control_poll: Duration,
 }
 
 impl RestartSupervisor {
+    /// Wraps `child`, restarting it after every failure with the default
+    /// [`RestartBackoff`], no restart limit and a backoff reset after
+    /// 60 seconds of healthy runtime.
     pub fn new(child: impl Runnable) -> Self {
         let child: Arc<dyn Runnable> = Arc::from(Box::new(child) as Box<dyn Runnable>);
         let child_handle = child.process_handle();
@@ -77,12 +104,42 @@ impl RestartSupervisor {
             child_handle,
             runtime_guard: RuntimeGuard::default(),
             backoff: RestartBackoff::default(),
+            restart_limit: None,
+            reset_after: DEFAULT_RESET_AFTER,
             control_poll: Duration::from_millis(50),
         }
     }
 
+    /// Sets the backoff applied between restarts.
     pub fn backoff(mut self, backoff: RestartBackoff) -> Self {
         self.backoff = backoff;
+        self
+    }
+
+    /// Gives up once the child has failed more than `max_restarts` times
+    /// within the sliding `window`.
+    ///
+    /// When the limit is exceeded the supervisor stops restarting and returns
+    /// a [`RuntimeError::Internal`] that names the child and includes its last
+    /// error. Inside a [`ProcessManager`](crate::ProcessManager) this shuts
+    /// down all sibling processes.
+    ///
+    /// `max_restarts == 0` means the first failure is final. Without this
+    /// setting the child is restarted indefinitely.
+    pub fn restart_limit(mut self, max_restarts: u32, window: Duration) -> Self {
+        self.restart_limit = Some(RestartLimit {
+            max_restarts,
+            window,
+        });
+        self
+    }
+
+    /// Resets the backoff to [`RestartBackoff::initial`] when the child ran
+    /// for at least `duration` before it failed.
+    ///
+    /// Defaults to 60 seconds.
+    pub fn reset_after(mut self, duration: Duration) -> Self {
+        self.reset_after = duration;
         self
     }
 }
@@ -92,6 +149,8 @@ impl Runnable for RestartSupervisor {
         let child = Arc::clone(&self.child);
         let child_handle = Arc::clone(&self.child_handle);
         let backoff = self.backoff;
+        let restart_limit = self.restart_limit;
+        let reset_after = self.reset_after;
         let control_poll = self.control_poll;
         let guard = self.runtime_guard.clone();
         let child_name = child.process_name().to_string();
@@ -99,8 +158,10 @@ impl Runnable for RestartSupervisor {
         Box::pin(async move {
             let ticker = guard.runtime_ticker().await;
             let mut failures = 0_u32;
+            let mut failure_times: VecDeque<Instant> = VecDeque::new();
 
             loop {
+                let started = Instant::now();
                 let mut child_task = tokio::spawn({
                     let child = Arc::clone(&child);
                     async move { child.process_start().await }
@@ -138,6 +199,30 @@ impl Runnable for RestartSupervisor {
                         ),
                     },
                 };
+
+                let now = Instant::now();
+                if now.duration_since(started) >= reset_after {
+                    failures = 0;
+                }
+
+                if let Some(limit) = restart_limit {
+                    failure_times.push_back(now);
+                    while failure_times
+                        .front()
+                        .is_some_and(|t| now.duration_since(*t) > limit.window)
+                    {
+                        failure_times.pop_front();
+                    }
+                    if failure_times.len() > limit.max_restarts as usize {
+                        return Err(RuntimeError::Internal {
+                            message: format!(
+                                "restart supervisor gave up on `{child_name}` after {} failures within {:?}: {failure}",
+                                failure_times.len(),
+                                limit.window
+                            ),
+                        });
+                    }
+                }
 
                 failures = failures.saturating_add(1);
                 let delay = backoff.delay_for_failures(failures);
@@ -177,6 +262,6 @@ impl Runnable for RestartSupervisor {
     }
 
     fn process_name(&self) -> Cow<'static, str> {
-        Cow::Borrowed("RestartSupervisor")
+        Cow::Owned(format!("RestartSupervisor({})", self.child.process_name()))
     }
 }
