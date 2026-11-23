@@ -24,7 +24,7 @@ use crate::{
 /// A *tombstone* process that simply waits for a shutdown request.
 ///
 /// It performs no work and exists solely to keep its parent
-/// [`ProcessManager`] alive until an explicit shutdown is broadcast.
+/// [`ProcessManager`](crate::ProcessManager) alive until an explicit shutdown is broadcast.
 #[derive(Debug, Default)]
 pub struct IdleProcess {
     runtime_guard: RuntimeGuard,
