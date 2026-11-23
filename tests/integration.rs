@@ -1638,3 +1638,69 @@ mod termination_request {
         );
     }
 }
+
+mod child_panics {
+    use super::*;
+    use processmanager::IdleProcess;
+
+    /// Panics while *creating* its future, before returning it.
+    struct PanicsBeforeFuture;
+
+    impl Runnable for PanicsBeforeFuture {
+        #[allow(unreachable_code)]
+        fn process_start(&self) -> ProcFuture<'_> {
+            panic!("boom before future");
+            Box::pin(async { Ok(()) })
+        }
+
+        fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+            Arc::new(StubControlHandle)
+        }
+    }
+
+    /// Panics while its future is being polled.
+    struct PanicsInFuture;
+
+    impl Runnable for PanicsInFuture {
+        fn process_start(&self) -> ProcFuture<'_> {
+            Box::pin(async { panic!("boom in future") })
+        }
+
+        fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+            Arc::new(StubControlHandle)
+        }
+    }
+
+    async fn run_with_idle_sibling(child: impl Runnable) -> Result<(), RuntimeError> {
+        let manager = ProcessManagerBuilder::default()
+            .pre_insert(child)
+            .pre_insert(IdleProcess::new())
+            .build();
+        timeout(Duration::from_secs(2), manager.process_start())
+            .await
+            .expect("a panicking child must stop the manager")
+    }
+
+    #[tokio::test]
+    async fn panic_before_future_is_reported_as_panic() {
+        let result = run_with_idle_sibling(PanicsBeforeFuture).await;
+        match result {
+            Err(RuntimeError::Internal { message }) => assert_eq!(
+                message, "process panicked: boom before future",
+                "must not be reported as an abort"
+            ),
+            other => panic!("expected a panic error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn panic_in_future_is_reported_as_panic() {
+        let result = run_with_idle_sibling(PanicsInFuture).await;
+        match result {
+            Err(RuntimeError::Internal { message }) => {
+                assert_eq!(message, "process panicked: boom in future")
+            }
+            other => panic!("expected a panic error, got {other:?}"),
+        }
+    }
+}

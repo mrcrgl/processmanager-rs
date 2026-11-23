@@ -638,9 +638,11 @@ fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) -> JoinHan
         #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
         eprintln!("Start process {name}");
 
-        // run the child and convert a panic into an `Err` so the supervisor
-        // can react instead of hanging forever.
-        let catch_fut = AssertUnwindSafe(proc.process_start()).catch_unwind();
+        // Run the child and convert a panic into an `Err` so the supervisor
+        // can react instead of hanging forever. `process_start()` is called
+        // *inside* the unwind boundary, so a panic while creating the future
+        // is caught just like a panic while polling it.
+        let catch_fut = AssertUnwindSafe(async { proc.process_start().await }).catch_unwind();
 
         #[cfg(feature = "tracing")]
         let catch_result = {
