@@ -53,6 +53,15 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   e.g. `RestartSupervisor(my_crate::Worker)` (`#4`).
 
 ### Fixed
+- Documentation matches the code again: the crate overview is on the crate
+  page (it was attached to a private module), every public item is
+  documented (`missing_docs` is now enforced), `ProcessManager`,
+  `RuntimeGuard`, `IdleProcess` and `RestartSupervisor` carry their docs on
+  the public types, the `ProcessControlHandler` docs describe what its
+  futures wait for, and the README states the actual license (MIT), runtime
+  requirement and logging behaviour. The deprecated
+  `processmanager::receiver::SignalReceiver` path now actually warns
+  (`#69`).
 - `ProcessManager::add` no longer races the manager's start (an `add` right
   after spawning `process_start` panicked) or its exit (a child added as the
   last one finished could be orphaned) (`#67`).
@@ -129,8 +138,9 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 - `process_handle()` now returns `Arc<dyn ProcessControlHandler>` (cheap cloning,
   no double boxing).
 - Default `process_name()` no longer allocates; returns `Cow<'static, str>`.
-- `ProcessManager` constructors **deprecated** in favour of the new builder;
-  `new()`, `manual_cleanup()` and `auto_cleanup()` now issue warnings.
+- `ProcessManagerBuilder` is the recommended way to construct a
+  `ProcessManager`. (This entry previously claimed that `ProcessManager`
+  constructors were deprecated; they were not.)
 - Busy-wait loops in `RuntimeGuard` replaced with `Notify`-based signalling.
 - Child panic handling now caught with `catch_unwind`, ensuring supervisor
   never hangs.

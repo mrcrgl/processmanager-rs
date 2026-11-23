@@ -1,21 +1,4 @@
-//! A no-op [`Runnable`] that idles until it receives a shutdown request.
-//!
-//! `IdleProcess` is useful as a *tombstone* child for a [`ProcessManager`](crate::ProcessManager) that
-//! would otherwise terminate immediately because it has no real children.
-//! Registering an `IdleProcess` keeps the supervisor alive until an external
-//! caller broadcasts [`ProcessControlHandler::shutdown`].
-//!
-//! # Example
-//! Constructing it needs no Tokio runtime:
-//!
-//! ```
-//! use processmanager::{IdleProcess, ProcessManagerBuilder};
-//!
-//! // Supervisor without real children that should stay alive.
-//! let _mgr = ProcessManagerBuilder::default()
-//!     .pre_insert(IdleProcess::default())
-//!     .build();
-//! ```
+//! A no-op runnable that idles until shutdown; see [`IdleProcess`].
 use std::{sync::Arc, time::Duration};
 
 use crate::{
@@ -23,10 +6,24 @@ use crate::{
     RuntimeGuard,
 };
 
-/// A *tombstone* process that simply waits for a shutdown request.
+/// A no-op [`Runnable`] that idles until it receives a shutdown request.
 ///
-/// It performs no work and exists solely to keep its parent
-/// [`ProcessManager`](crate::ProcessManager) alive until an explicit shutdown is broadcast.
+/// `IdleProcess` is useful as a *tombstone* child for a [`ProcessManager`](crate::ProcessManager) that
+/// would otherwise terminate immediately because it has no real children.
+/// Registering an `IdleProcess` keeps the supervisor alive until an external
+/// caller broadcasts [`ProcessControlHandler::shutdown`].
+///
+/// # Example
+/// Constructing it needs no Tokio runtime:
+///
+/// ```
+/// use processmanager::{IdleProcess, ProcessManagerBuilder};
+///
+/// // Supervisor without real children that should stay alive.
+/// let _mgr = ProcessManagerBuilder::default()
+///     .pre_insert(IdleProcess::default())
+///     .build();
+/// ```
 #[derive(Debug, Default)]
 pub struct IdleProcess {
     runtime_guard: RuntimeGuard,
