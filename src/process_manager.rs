@@ -10,7 +10,6 @@ use std::{
 };
 
 use futures::FutureExt as _;
-use once_cell::sync::OnceCell;
 use std::panic::AssertUnwindSafe;
 use tokio::{
     sync::mpsc,
@@ -39,13 +38,13 @@ struct Child {
 }
 
 impl Child {
-    fn new(id: usize, proc: Arc<dyn Runnable>, inner: &Arc<Inner>) -> Self {
+    fn new(id: usize, proc: Arc<dyn Runnable>, inner: &Arc<Inner>, tx: CompletionSender) -> Self {
         let handle = proc.process_handle();
         Self {
             id,
             proc: Arc::clone(&proc),
             handle,
-            join_handle: Arc::new(spawn_child(id, proc, Arc::clone(inner))),
+            join_handle: Arc::new(spawn_child(id, proc, Arc::clone(inner), tx)),
             shutdown_sent: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -66,6 +65,7 @@ impl Drop for AbortChildrenOnDrop {
             // Also covers an aborted supervisor: `add` must not spawn into a
             // manager that is no longer running.
             registry.phase = Phase::Stopped;
+            registry.completion_tx = None;
             for child in registry.children.iter() {
                 child.join_handle.abort();
             }
@@ -94,6 +94,10 @@ struct Registry {
     /// Children spawned by every `process_start` (from `insert`, and from
     /// `add` before the first start).
     template: Vec<Arc<dyn Runnable>>,
+    /// Completion channel of the current run; `Some` exactly while
+    /// `phase == Running`. Each run has its own channel, so reports from
+    /// children of an earlier, aborted run never reach a later one.
+    completion_tx: Option<CompletionSender>,
 }
 
 /// Why [`ProcessManager::add`] did not accept a child.
@@ -118,9 +122,6 @@ impl std::fmt::Display for AddError {
 
 impl std::error::Error for AddError {}
 
-type ProcessCompletionChannel =
-    tokio::sync::Mutex<mpsc::UnboundedReceiver<(usize, Result<(), RuntimeError>)>>;
-
 /// Shared state between the handle you pass around, the supervisor task and all
 /// children.
 struct Inner {
@@ -130,10 +131,8 @@ struct Inner {
     /// when `process_start` returns.
     shutdown_requested: AtomicBool,
     next_id: AtomicUsize,
+    /// Children of the current run that have not reported completion yet.
     active: AtomicUsize,
-    // supervisor RECEIVES from here, children (spawn_child) only send
-    completion_tx: mpsc::UnboundedSender<(usize, Result<(), RuntimeError>)>,
-    completion_rx: OnceCell<ProcessCompletionChannel>,
     shutdown_grace_period: Duration,
 }
 
@@ -154,6 +153,10 @@ struct Inner {
 ///   are aborted.
 /// * Children that finish successfully are removed (on by default, see
 ///   [`auto_cleanup`](crate::ProcessManagerBuilder::auto_cleanup)).
+/// * Once `process_start` has returned, it can be called again (e.g. by a
+///   [`RestartSupervisor`](crate::RestartSupervisor)); this starts the
+///   children registered before the first start again. A call while the
+///   manager is running returns a [`RuntimeError::Internal`].
 ///
 /// A `ProcessManager` is itself a [`Runnable`], so managers can be nested
 /// into trees. Prefer [`ProcessManagerBuilder`](crate::ProcessManagerBuilder)
@@ -201,8 +204,6 @@ impl ProcessManager {
     pub fn new() -> Self {
         let id = PID.fetch_add(1, Ordering::SeqCst);
 
-        let (tx, rx) = mpsc::unbounded_channel();
-
         Self {
             id,
             inner: Arc::new(Inner {
@@ -210,16 +211,11 @@ impl ProcessManager {
                     phase: Phase::NotStarted,
                     children: Vec::new(),
                     template: Vec::new(),
+                    completion_tx: None,
                 }),
                 shutdown_requested: AtomicBool::new(false),
                 next_id: AtomicUsize::new(0),
                 active: AtomicUsize::new(0),
-                completion_tx: tx,
-                completion_rx: {
-                    let cell = OnceCell::new();
-                    let _ = cell.set(tokio::sync::Mutex::new(rx));
-                    cell
-                },
                 shutdown_grace_period: Duration::from_secs(30),
             }),
             custom_name: None,
@@ -290,7 +286,13 @@ impl ProcessManager {
                     return Err(AddError::ShuttingDown);
                 }
                 let id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
-                registry.children.push(Child::new(id, proc, &self.inner));
+                let tx = registry
+                    .completion_tx
+                    .clone()
+                    .expect("a running manager has a completion channel");
+                registry
+                    .children
+                    .push(Child::new(id, proc, &self.inner, tx));
                 Ok(())
             }
         }
@@ -305,9 +307,34 @@ impl Runnable for ProcessManager {
         let manager_handle = self.process_handle();
 
         Box::pin(async move {
-            let _abort_children = AbortChildrenOnDrop(Arc::clone(&inner));
-
             let name = self.process_name();
+
+            /* -- spawn every child registered before start() ---------------- */
+            let mut completion_rx = {
+                let mut registry = inner.registry.lock().unwrap();
+                if registry.phase == Phase::Running {
+                    // Checked before `AbortChildrenOnDrop` exists, so the
+                    // rejected call leaves the running one untouched.
+                    return Err(RuntimeError::Internal {
+                        message: format!("process manager {name} is already running"),
+                    });
+                }
+                registry.phase = Phase::Running;
+                let (tx, rx) = mpsc::unbounded_channel();
+                registry.completion_tx = Some(tx.clone());
+                // Children of an earlier run that was dropped mid-way never
+                // reported to this run's channel; don't wait for them.
+                inner.active.store(0, Ordering::SeqCst);
+                let template = registry.template.clone();
+                for proc in template {
+                    let id = inner.next_id.fetch_add(1, Ordering::SeqCst);
+                    registry
+                        .children
+                        .push(Child::new(id, proc, &inner, tx.clone()));
+                }
+                rx
+            };
+            let _abort_children = AbortChildrenOnDrop(Arc::clone(&inner));
 
             #[cfg(feature = "tracing")]
             ::tracing::info!("Start process manager {name}");
@@ -315,17 +342,6 @@ impl Runnable for ProcessManager {
             ::log::info!("Start process manager {name}");
             #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
             eprintln!("Start process manager {name}");
-
-            /* -- spawn every child registered before start() ---------------- */
-            {
-                let mut registry = inner.registry.lock().unwrap();
-                registry.phase = Phase::Running;
-                let template = registry.template.clone();
-                for proc in template {
-                    let id = inner.next_id.fetch_add(1, Ordering::SeqCst);
-                    registry.children.push(Child::new(id, proc, &inner));
-                }
-            }
 
             // A shutdown requested before (or while) the children were
             // registered must not be lost: deliver it to every child that
@@ -335,12 +351,6 @@ impl Runnable for ProcessManager {
             }
 
             /* -- supervisor event-loop -------------------------------------- */
-            let completion_rx = inner
-                .completion_rx
-                .get()
-                .expect("process_start called twice");
-            let mut completion_rx = completion_rx.lock().await;
-
             let mut first_error: Option<RuntimeError> = None;
             // Set when a child asked for a graceful stop by returning
             // `RuntimeError::TerminationSignal` (e.g. `SignalReceiver`).
@@ -365,6 +375,7 @@ impl Runnable for ProcessManager {
                     let mut registry = inner.registry.lock().unwrap();
                     if inner.active.load(Ordering::SeqCst) == 0 {
                         registry.phase = Phase::Stopped;
+                        registry.completion_tx = None;
                         inner.shutdown_requested.store(false, Ordering::SeqCst);
                         break;
                     }
@@ -405,8 +416,10 @@ impl Runnable for ProcessManager {
                         inner.active.fetch_sub(1, Ordering::SeqCst);
                     }
                     None => {
-                        // Sender dropped – supervisor should stop.
-                        inner.registry.lock().unwrap().phase = Phase::Stopped;
+                        // Unreachable: the registry keeps a sender while running.
+                        let mut registry = inner.registry.lock().unwrap();
+                        registry.phase = Phase::Stopped;
+                        registry.completion_tx = None;
                         inner.shutdown_requested.store(false, Ordering::SeqCst);
                         return Err(RuntimeError::Internal {
                             message: "completion channel closed unexpectedly".into(),
@@ -463,7 +476,7 @@ impl Runnable for ProcessManager {
     }
 }
 
-#[cfg(feature = "signal")]
+#[cfg(all(unix, feature = "signal"))]
 impl ProcessManager {
     /// A handle that does not keep the manager alive.
     ///
@@ -472,7 +485,7 @@ impl ProcessManager {
     /// a strong handle stored inside one of the manager's own children would
     /// form a reference cycle. Once the manager is gone, the handle's methods
     /// do nothing.
-    #[cfg(feature = "signal")]
+    #[cfg(all(unix, feature = "signal"))]
     pub(crate) fn weak_handle(&self) -> Arc<dyn ProcessControlHandler> {
         Arc::new(WeakHandle {
             inner: Arc::downgrade(&self.inner),
@@ -480,12 +493,12 @@ impl ProcessManager {
     }
 }
 
-#[cfg(feature = "signal")]
+#[cfg(all(unix, feature = "signal"))]
 struct WeakHandle {
     inner: std::sync::Weak<Inner>,
 }
 
-#[cfg(feature = "signal")]
+#[cfg(all(unix, feature = "signal"))]
 impl ProcessControlHandler for WeakHandle {
     fn shutdown(&self) -> CtrlFuture<'_> {
         let inner = self.inner.upgrade();
@@ -693,13 +706,18 @@ impl Drop for CompletionReporter {
 ///
 /// Accounting with [`Inner::active`] is done **before** the task is actually
 /// spawned so the supervisor has an accurate count even if the spawn fails.
-fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) -> JoinHandle<()> {
+fn spawn_child(
+    id: usize,
+    proc: Arc<dyn Runnable>,
+    inner: Arc<Inner>,
+    tx: CompletionSender,
+) -> JoinHandle<()> {
     // increment *before* spawning the task – guarantees the counter is in sync
     inner.active.fetch_add(1, Ordering::SeqCst);
     let name = proc.process_name();
     // Created before spawning so that even a task aborted before its first
     // poll still reports completion when its future is dropped.
-    let reporter = CompletionReporter::new(id, name.clone(), inner.completion_tx.clone());
+    let reporter = CompletionReporter::new(id, name.clone(), tx);
 
     tokio::spawn(async move {
         // Task already accounted for in the caller.

@@ -75,7 +75,8 @@
 //! # Features
 //!
 //! * `signal` (default) – `SignalReceiver` and
-//!   `ProcessManagerBuilder::handle_signals()` for Unix signals.
+//!   `ProcessManagerBuilder::handle_signals()` for Unix signals. Unix only:
+//!   on other targets the feature compiles to nothing.
 //! * `tracing` – log through the `tracing` crate.
 //! * `log` – log through the `log` crate (`tracing` wins if both are enabled).
 //!
@@ -85,6 +86,11 @@
 
 /// Built-in [`Runnable`] helpers.
 pub mod builtin;
+
+// With both `tracing` and `log` enabled, `tracing` is used and `log` would
+// otherwise be reported as an unused dependency.
+#[cfg(all(feature = "tracing", feature = "log"))]
+use log as _;
 mod error;
 mod process_manager;
 mod process_manager_builder;
@@ -102,7 +108,7 @@ pub use runtime_process::*;
 pub use runtime_ticker::*;
 
 /// Old location of [`builtin::SignalReceiver`].
-#[cfg(feature = "signal")]
+#[cfg(all(unix, feature = "signal"))]
 pub mod receiver {
     /// Deprecated alias of [`SignalReceiver`](crate::builtin::SignalReceiver).
     #[deprecated(note = "use `processmanager::builtin::SignalReceiver` instead")]

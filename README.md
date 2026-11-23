@@ -188,7 +188,7 @@ flowchart TD
 
 | Feature   | Default? | Description                                                         |
 | --------- | -------- | ------------------------------------------------------------------- |
-| `signal`  | yes      | Activates `builtin::SignalReceiver` for Unix signal handling.        |
+| `signal`  | yes      | Activates `builtin::SignalReceiver` for Unix signal handling. Compiles to nothing on non-Unix targets. |
 | `tracing` | no       | Emit structured log events via the `tracing` crate.                 |
 | `log`     | no       | Use the `log` crate for textual logging if `tracing` is disabled.   |
 

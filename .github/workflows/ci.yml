@@ -93,3 +93,17 @@ jobs:
 
       - name: Check (no default features)
         run: cargo check --locked --all-targets --no-default-features
+
+  windows:
+    name: Build (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check (default features)
+        run: cargo check --locked --all-targets

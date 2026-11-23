@@ -92,7 +92,7 @@ impl ProcessManagerBuilder {
     /// * `SIGHUP` calls `reload()` on the manager, reaching every child.
     ///
     /// Signals are process-wide, so call this on the root manager only.
-    #[cfg(feature = "signal")]
+    #[cfg(all(unix, feature = "signal"))]
     pub fn handle_signals(mut self) -> Self {
         self.initializers.push(Box::new(|mgr: &mut ProcessManager| {
             let target = mgr.weak_handle();
