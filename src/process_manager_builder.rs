@@ -64,6 +64,10 @@ impl ProcessManagerBuilder {
     }
 
     /// Set the shutdown grace period used before force-aborting child tasks.
+    ///
+    /// A child that is aborted after the grace period is reported to the
+    /// supervisor as a [`RuntimeError::Internal`](crate::RuntimeError::Internal)
+    /// naming that child.
     pub fn shutdown_grace_period(mut self, duration: Duration) -> Self {
         self.shutdown_grace_period = Some(duration);
         self

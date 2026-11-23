@@ -6,6 +6,12 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `ProcessManager::process_start` no longer hangs when a child is force-aborted
+  after `shutdown_grace_period`; the aborted child is reported as a
+  `RuntimeError::Internal` naming it, and the first error is still returned
+  (`#53`).
+
 ## [0.6.0] – 2026-04-07
 
 ### Added
