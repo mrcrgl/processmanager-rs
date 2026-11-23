@@ -27,7 +27,7 @@ fn constructors_work_outside_a_runtime() {
     let _job = Job::new("job", || async { Ok(()) });
     let _sup = RestartSupervisor::new(IdleProcess::new());
     let _ctx = with_runtime_context(ContextNoop);
-    #[cfg(feature = "signal")]
+    #[cfg(all(unix, feature = "signal"))]
     let _signals = processmanager::builtin::SignalReceiver::new();
 }
 

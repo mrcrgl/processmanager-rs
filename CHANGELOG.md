@@ -30,6 +30,14 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   child ran healthily for `duration` (default: 60s) (`#4`).
 
 ### Changed
+- **Breaking:** the empty `manager` feature is removed; drop it from
+  `features = [...]` (#75).
+- tokio is requested with only `macros`, `rt`, `sync` and `time`, so the
+  crate no longer forces `rt-multi-thread` on users; `once_cell` is no longer
+  a dependency. The published crate only contains sources, README, changelog
+  and license (#75).
+- The `signal` feature compiles to nothing on non-Unix targets, so a default
+  build works on Windows (#75).
 - CI lints tests and examples (`--all-targets`), checks and tests the `log`
   feature, uses `dtolnay/rust-toolchain`, and publishes with `--locked`;
   `Cargo.lock` is now committed (#70).
@@ -57,6 +65,11 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   e.g. `RestartSupervisor(my_crate::Worker)` (`#4`).
 
 ### Fixed
+- `ProcessManager::process_start` called while the manager is already
+  running returns an error instead of re-spawning its children next to the
+  running ones (which brought the running manager down). Restarting a stopped
+  manager is no longer disturbed by children of an earlier run whose future
+  was dropped (#75).
 - Documentation matches the code again: the crate overview is on the crate
   page (it was attached to a private module), every public item is
   documented (`missing_docs` is now enforced), `ProcessManager`,

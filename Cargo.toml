@@ -8,35 +8,37 @@ authors = ["Marc Riegel <mail@mrcrgl.de>"]
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/mrcrgl/processmanager-rs"
+documentation = "https://docs.rs/processmanager"
+include = ["/src/**/*.rs", "/Cargo.toml", "/README.md", "/CHANGELOG.md", "/LICENSE"]
 categories = ["rust-patterns"]
 keywords = ["process", "graceful-shutdown", "signal", "runnable"]
 
 [features]
-default = ["manager", "signal"]
+default = ["signal"]
+# `log` and `tracing` select the latest supported major version; the
+# versioned names pin one, so a future `log` 0.5 can be added alongside.
 log = ["log-v0_4"]
 log-v0_4 = ["dep:log"]
 tracing = ["tracing-v0_1"]
 tracing-v0_1 = ["dep:tracing"]
-manager = []
+# Unix signal handling; a no-op on other targets.
 signal = ["dep:signal-hook", "dep:signal-hook-tokio"]
 
 [dependencies]
 futures = "0.3"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+log = { version = "0.4", optional = true }
+tracing = { version = "0.1", optional = true }
+
+[target.'cfg(unix)'.dependencies]
 signal-hook = { version = "0.3", optional = true }
 signal-hook-tokio = { version = "0.3", optional = true, features = [
     "futures-v0_3",
 ] }
-tokio = { version = "1", features = [
-    "sync",
-    "default",
-    "rt-multi-thread",
-    "macros",
-    "time",
-] }
-log = { version = "0.4", optional = true }
-tracing = { version = "0.1", optional = true }
-once_cell = "1"
 
 [dev-dependencies]
 axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+
+[target.'cfg(unix)'.dev-dependencies]
 signal-hook = "0.3"

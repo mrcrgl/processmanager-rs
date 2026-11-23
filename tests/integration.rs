@@ -1921,3 +1921,97 @@ mod runtime_error {
         assert!(RuntimeError::TerminationSignal.source().is_none());
     }
 }
+
+mod restart {
+    use super::*;
+    use processmanager::{IdleProcess, Job};
+
+    #[tokio::test]
+    async fn concurrent_start_is_rejected_without_disturbing_the_running_one() {
+        let manager = Arc::new(ProcessManagerBuilder::default().build());
+        manager.add(IdleProcess::new()).unwrap();
+        let run = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            async move { manager.process_start().await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let second = timeout(Duration::from_secs(1), manager.process_start())
+            .await
+            .expect("a rejected start returns at once");
+        match second {
+            Err(RuntimeError::Internal { message }) => {
+                assert!(message.contains("already running"), "{message}")
+            }
+            other => panic!("expected an already-running error, got {other:?}"),
+        }
+
+        assert!(!run.is_finished(), "the first run must keep running");
+        manager.process_handle().shutdown().await;
+        timeout(Duration::from_secs(2), run)
+            .await
+            .expect("manager must stop")
+            .expect("manager task panicked")
+            .expect("clean shutdown");
+    }
+
+    #[tokio::test]
+    async fn restart_after_a_clean_stop_respawns_children() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let manager = ProcessManagerBuilder::default()
+            .pre_insert(Job::new("count", {
+                let runs = Arc::clone(&runs);
+                move || {
+                    let runs = Arc::clone(&runs);
+                    async move {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    }
+                }
+            }))
+            .build();
+
+        for expected in 1..=2 {
+            timeout(Duration::from_secs(2), manager.process_start())
+                .await
+                .expect("manager must stop once the job is done")
+                .expect("clean run");
+            assert_eq!(runs.load(Ordering::SeqCst), expected);
+        }
+    }
+
+    /// A run whose future was dropped leaves aborted children behind. Their
+    /// completion reports must not reach the next run.
+    #[tokio::test]
+    async fn restart_after_a_dropped_run_is_not_affected_by_it() {
+        let manager = Arc::new(ProcessManagerBuilder::default().build());
+        manager.add(IdleProcess::new()).unwrap();
+
+        let first = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            async move { manager.process_start().await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        first.abort();
+        let _ = first.await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let second = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            async move { manager.process_start().await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !second.is_finished(),
+            "the new run stopped early: {:?}",
+            second.await
+        );
+
+        manager.process_handle().shutdown().await;
+        timeout(Duration::from_secs(2), second)
+            .await
+            .expect("manager must stop")
+            .expect("manager task panicked")
+            .expect("clean shutdown");
+    }
+}
