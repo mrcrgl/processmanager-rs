@@ -23,6 +23,12 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   e.g. `RestartSupervisor(my_crate::Worker)` (`#4`).
 
 ### Fixed
+- `ProcessManagerBuilder` now defaults to `auto_cleanup = true`, as
+  documented; it previously defaulted to `false`, so finished children were
+  never removed (`#61`).
+- `reload()` and `shutdown()` on a `ProcessManager` handle skip children that
+  have already finished, so repeated broadcasts no longer hang (reload) or
+  wait for the grace period (shutdown) on a dead child (`#61`).
 - Broken intra-doc links in private module docs (`IdleProcess`,
   `SignalReceiver`, `ProcessManagerBuilder`, `RuntimeGuard`, `RuntimeTicker`)
   and a duplicated doc sentence on `RuntimeControlMessage` (`#57`).

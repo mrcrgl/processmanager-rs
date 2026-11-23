@@ -76,9 +76,6 @@ type ProcessCompletionChannel =
 /// children.
 struct Inner {
     processes: Mutex<Vec<Child>>,
-    /// Cached list of `ProcessControlHandler`s for fast broadcast without
-    /// temporary allocations.
-    handles: Mutex<Vec<Arc<dyn ProcessControlHandler>>>,
     running: AtomicBool,
     next_id: AtomicUsize,
     active: AtomicUsize,
@@ -125,7 +122,6 @@ impl ProcessManager {
             pre_start: Vec::new(),
             inner: Arc::new(Inner {
                 processes: Mutex::new(Vec::new()),
-                handles: Mutex::new(Vec::new()),
                 running: AtomicBool::new(false),
                 next_id: AtomicUsize::new(0),
                 active: AtomicUsize::new(0),
@@ -184,8 +180,6 @@ impl ProcessManager {
         // Running → register & spawn immediately.
         let id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
         let handle = proc.process_handle();
-        // cache handle immediately
-        self.inner.handles.lock().unwrap().push(Arc::clone(&handle));
 
         {
             let mut guard = self.inner.processes.lock().unwrap();
@@ -229,10 +223,9 @@ impl Runnable for ProcessManager {
                     g.push(Child {
                         id,
                         proc: Arc::clone(&proc),
-                        handle: Arc::clone(&handle),
+                        handle,
                         join_handle: Arc::new(spawn_child(id, proc, Arc::clone(&inner))),
                     });
-                    inner.handles.lock().unwrap().push(handle);
                 }
             }
 
@@ -268,14 +261,7 @@ impl Runnable for ProcessManager {
                         match res {
                             Ok(()) => {
                                 if auto_cleanup {
-                                    let mut g = inner.processes.lock().unwrap();
-                                    g.retain(|c| c.id != cid);
-                                    // also remove cached handle
-                                    inner
-                                        .handles
-                                        .lock()
-                                        .unwrap()
-                                        .retain(|h| g.iter().any(|c| Arc::ptr_eq(&c.handle, h)));
+                                    inner.processes.lock().unwrap().retain(|c| c.id != cid);
                                 }
                             }
                             Err(err) => {
@@ -357,6 +343,10 @@ struct Handle {
 impl ProcessControlHandler for Handle {
     /// Broadcasts [`ProcessControlHandler::shutdown`] to every currently active
     /// child and waits for them to complete.
+    ///
+    /// Children whose task has already finished are skipped: nothing drains
+    /// their control channel any more, so a send could block until the grace
+    /// period expires.
     fn shutdown(&self) -> CtrlFuture<'_> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
@@ -366,6 +356,7 @@ impl ProcessControlHandler for Handle {
                 let guard = inner.processes.lock().unwrap();
                 guard
                     .iter()
+                    .filter(|child| !child.join_handle.is_finished())
                     .map(|child| {
                         (
                             child.proc.process_name(),
@@ -430,14 +421,21 @@ impl ProcessControlHandler for Handle {
     /// Broadcasts [`ProcessControlHandler::reload`] to every active child.
     /// The reload operations are executed in parallel and awaited before the
     /// future completes.
+    ///
+    /// Children whose task has already finished are skipped: nothing drains
+    /// their control channel any more, so repeated sends would block forever.
     fn reload(&self) -> CtrlFuture<'_> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             let mut set = JoinSet::new();
 
             let handles = {
-                let guard = inner.handles.lock().unwrap();
-                guard.clone()
+                let guard = inner.processes.lock().unwrap();
+                guard
+                    .iter()
+                    .filter(|child| !child.join_handle.is_finished())
+                    .map(|child| Arc::clone(&child.handle))
+                    .collect::<Vec<_>>()
             };
 
             for h in handles {

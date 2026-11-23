@@ -1227,3 +1227,68 @@ mod job {
         assert_eq!(job.process_name(), "migrate");
     }
 }
+
+mod finished_children {
+    use super::*;
+    use processmanager::{IdleProcess, Job};
+
+    async fn reload_repeatedly_with_finished_job(auto_cleanup: bool) {
+        let manager = ProcessManagerBuilder::default()
+            .auto_cleanup(auto_cleanup)
+            .pre_insert(IdleProcess::new())
+            .pre_insert(Job::new("done", || async { Ok(()) }))
+            .build();
+        let handle = manager.process_handle();
+        let run = tokio::spawn(async move { manager.process_start().await });
+
+        // Let the job finish while the idle sibling keeps the manager alive.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        for i in 1..=5 {
+            timeout(Duration::from_secs(1), handle.reload())
+                .await
+                .unwrap_or_else(|_| panic!("reload {i} hung on a finished child"));
+        }
+
+        handle.shutdown().await;
+        timeout(Duration::from_secs(1), run)
+            .await
+            .expect("manager must stop after shutdown")
+            .expect("manager task panicked")
+            .expect("manager must stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn reload_does_not_hang_on_finished_child_with_default_builder() {
+        reload_repeatedly_with_finished_job(true).await;
+    }
+
+    #[tokio::test]
+    async fn reload_does_not_hang_on_finished_child_without_auto_cleanup() {
+        reload_repeatedly_with_finished_job(false).await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_skips_finished_children() {
+        let manager = ProcessManagerBuilder::default()
+            .auto_cleanup(false)
+            .shutdown_grace_period(Duration::from_secs(5))
+            .pre_insert(Job::new("done", || async { Ok(()) }))
+            .build();
+        let handle = manager.process_handle();
+
+        timeout(Duration::from_secs(1), manager.process_start())
+            .await
+            .expect("manager must finish after its only job")
+            .expect("job succeeded");
+
+        // The finished job is still registered (auto_cleanup is off). Repeated
+        // broadcasts must neither block on its dead control channel nor wait
+        // for the grace period.
+        for i in 1..=5 {
+            timeout(Duration::from_secs(1), handle.shutdown())
+                .await
+                .unwrap_or_else(|_| panic!("shutdown {i} blocked on a finished child"));
+        }
+    }
+}
