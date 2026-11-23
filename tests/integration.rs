@@ -627,6 +627,138 @@ async fn test_restart_supervisor_shutdown_interrupts_backoff() {
     );
 }
 
+/// Runs for `run_for`, then fails; records the start time of every attempt.
+struct RunThenFailController {
+    run_for: Duration,
+    starts: Arc<std::sync::Mutex<Vec<tokio::time::Instant>>>,
+}
+
+impl Runnable for RunThenFailController {
+    fn process_start(&self) -> ProcFuture<'_> {
+        Box::pin(async {
+            self.starts
+                .lock()
+                .unwrap()
+                .push(tokio::time::Instant::now());
+            tokio::time::sleep(self.run_for).await;
+            Err(RuntimeError::Internal {
+                message: "failed after running".to_string(),
+            })
+        })
+    }
+
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        Arc::new(StubControlHandle)
+    }
+}
+
+#[tokio::test]
+async fn test_restart_supervisor_gives_up_after_restart_limit() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let wrapper = RestartSupervisor::new(AlwaysFailController::new(Arc::clone(&attempts)))
+        .backoff(RestartBackoff::new(
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+            1,
+        ))
+        .restart_limit(2, Duration::from_secs(10));
+
+    let result = timeout(Duration::from_secs(2), wrapper.process_start())
+        .await
+        .expect("restart supervisor must give up instead of retrying forever");
+
+    match result {
+        Err(RuntimeError::Internal { message }) => {
+            assert!(
+                message.contains("gave up") && message.contains("intentional permanent failure"),
+                "error must explain the give-up and carry the last failure, got: {message}"
+            );
+        }
+        other => panic!("expected give-up error, got {other:?}"),
+    }
+    // initial run + 2 restarts, then the third failure exceeds the limit
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn test_restart_supervisor_limit_shuts_down_siblings_in_manager() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let manager = ProcessManagerBuilder::default()
+        .pre_insert(processmanager::IdleProcess::default())
+        .pre_insert(
+            RestartSupervisor::new(AlwaysFailController::new(Arc::clone(&attempts)))
+                .backoff(RestartBackoff::new(
+                    Duration::from_millis(10),
+                    Duration::from_millis(10),
+                    1,
+                ))
+                .restart_limit(1, Duration::from_secs(10)),
+        )
+        .build();
+
+    let result = timeout(Duration::from_secs(2), manager.process_start())
+        .await
+        .expect("manager must stop once the restart limit is exceeded");
+
+    assert!(
+        matches!(&result, Err(RuntimeError::Internal { message }) if message.contains("gave up")),
+        "manager must return the give-up error, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_restart_supervisor_resets_backoff_after_healthy_run() {
+    let starts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    // Without a reset the delays would grow 20ms -> 200ms -> 2s.
+    let wrapper = Arc::new(
+        RestartSupervisor::new(RunThenFailController {
+            run_for: Duration::from_millis(80),
+            starts: Arc::clone(&starts),
+        })
+        .backoff(RestartBackoff::new(
+            Duration::from_millis(20),
+            Duration::from_secs(2),
+            10,
+        ))
+        .reset_after(Duration::from_millis(50)),
+    );
+    let handle = wrapper.process_handle();
+    let run = tokio::spawn({
+        let wrapper = Arc::clone(&wrapper);
+        async move { wrapper.process_start().await }
+    });
+
+    timeout(Duration::from_secs(2), async {
+        while starts.lock().unwrap().len() < 4 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("child must be restarted quickly when the backoff resets");
+
+    handle.shutdown().await;
+    let _ = timeout(Duration::from_secs(1), run).await;
+
+    let starts = starts.lock().unwrap();
+    for pair in starts.windows(2) {
+        let gap = pair[1].duration_since(pair[0]);
+        assert!(
+            gap < Duration::from_millis(80 + 150),
+            "every restart should use the initial delay, got gap={gap:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_restart_supervisor_name_includes_child() {
+    let wrapper = RestartSupervisor::new(FlakyController::new(0, Arc::new(AtomicUsize::new(0))));
+    let name = wrapper.process_name();
+    assert!(
+        name.starts_with("RestartSupervisor(") && name.contains("FlakyController"),
+        "unexpected name: {name}"
+    );
+}
+
 #[tokio::test]
 async fn test_shutdown_grace_period_is_configurable() {
     let manager = ProcessManagerBuilder::default()
