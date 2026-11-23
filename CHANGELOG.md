@@ -6,6 +6,19 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `RestartSupervisor::restart_limit(max_restarts, window)`: give up and return
+  an error once a child fails too often within a time window, which shuts
+  down sibling processes in a `ProcessManager` (`#4`).
+- `RestartSupervisor::reset_after(duration)`: reset the backoff after the
+  child ran healthily for `duration` (default: 60s) (`#4`).
+
+### Changed
+- `RestartSupervisor` backoff now resets after 60 seconds of healthy runtime
+  instead of growing for the lifetime of the supervisor (`#4`).
+- `RestartSupervisor::process_name` now includes the child's name,
+  e.g. `RestartSupervisor(my_crate::Worker)` (`#4`).
+
 ### Fixed
 - Broken intra-doc links in private module docs (`IdleProcess`,
   `SignalReceiver`, `ProcessManagerBuilder`, `RuntimeGuard`, `RuntimeTicker`)

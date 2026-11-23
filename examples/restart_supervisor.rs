@@ -1,7 +1,8 @@
 //! Restart supervisor demo.
 //!
 //! Shows how `RestartSupervisor` can wrap a flaky `Runnable` and restart it
-//! with exponential backoff until it succeeds.
+//! with exponential backoff until it succeeds. A restart limit makes the
+//! supervisor give up (and the manager shut down) if the child keeps failing.
 //!
 //! Build & run:
 //! ```bash
@@ -80,9 +81,14 @@ impl Runnable for FlakyWorker {
 async fn main() {
     let attempts = Arc::new(AtomicUsize::new(0));
 
-    let wrapped = RestartSupervisor::new(FlakyWorker::new(2, Arc::clone(&attempts))).backoff(
-        RestartBackoff::new(Duration::from_millis(200), Duration::from_secs(1), 2),
-    );
+    let wrapped = RestartSupervisor::new(FlakyWorker::new(2, Arc::clone(&attempts)))
+        .backoff(RestartBackoff::new(
+            Duration::from_millis(200),
+            Duration::from_secs(1),
+            2,
+        ))
+        // Give up if the worker fails more than 5 times within a minute.
+        .restart_limit(5, Duration::from_secs(60));
 
     let manager = ProcessManagerBuilder::default().pre_insert(wrapped).build();
     let handle = manager.process_handle();
