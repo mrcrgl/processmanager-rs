@@ -6,6 +6,11 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `Job` built-in for one-shot tasks such as migrations: runs an async closure
+  once, shuts the manager down on failure unless marked `.optional()`, and is
+  cancelled by shutdown (`#3`).
+
 ### Fixed
 - Broken intra-doc links in private module docs (`IdleProcess`,
   `SignalReceiver`, `ProcessManagerBuilder`, `RuntimeGuard`, `RuntimeTicker`)
