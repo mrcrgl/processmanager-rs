@@ -6,6 +6,25 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] – 2026-11-23
+
+### Upgrading from 0.6
+- `ProcessManager::add` returns `Result<(), AddError>`; handle or `expect` it.
+  Before the manager starts, `add` now queues the child like `insert`.
+- `RuntimeError` is `#[non_exhaustive]`: add a wildcard arm to `match`es. Wrap
+  your own errors with `RuntimeError::failed(err)` instead of formatting them
+  into `Internal { message }`.
+- A child returning `RuntimeError::TerminationSignal` (e.g. `SignalReceiver`
+  on Ctrl-C) makes the manager return `Ok(())`, not an error.
+- Remove `"manager"` from `features = [...]`; the feature no longer exists.
+- `ProcessManagerBuilder` now defaults to `auto_cleanup(true)`, as documented.
+- `RestartSupervisor` names itself `RestartSupervisor(<child>)` and resets its
+  backoff after 60s of healthy runtime; use `reset_after` to change that.
+- Calling `process_start` on a manager that is already running returns an
+  error.
+- Builder methods are `#[must_use]`; a discarded call now warns.
+- The minimum supported Rust version is 1.85.
+
 ### Added
 - `Debug` for `ProcessManager`, `ProcessManagerBuilder`, `RuntimeTicker`,
   `RuntimeContext`, `RuntimeContextRunnable`, `ProcessOperation`, `Job`,
