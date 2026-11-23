@@ -128,12 +128,18 @@ async fn main() {
 | `IdleProcess`    | Keeps an otherwise empty manager alive until an external shutdown is requested.                                          | —            |
 | `Job`            | Runs an async closure once. Failure shuts the manager down unless the job is marked `.optional()`; a shutdown cancels it. | —            |
 | `RestartSupervisor` | Wraps a child `Runnable`, restarts it after failures with exponential backoff (reset after a healthy run), and can give up after too many failures within a time window (`restart_limit`). | —            |
-| `SignalReceiver` | Listens for `SIGHUP`, `SIGINT`, `SIGTERM`, `SIGQUIT` and converts them into *shutdown / reload* control messages.        | `signal`     |
+| `SignalReceiver` | `SIGTERM` / `SIGINT` / `SIGQUIT` shut the manager down gracefully (`process_start` returns `Ok`); `SIGHUP` reloads it. Install with `ProcessManagerBuilder::handle_signals()`. | `signal`     |
 
-Enable `SignalReceiver` like this:
+Handle Unix signals on the root manager (the `signal` feature is enabled by
+default):
 
-```toml
-processmanager = { version = "0", features = ["signal"] }
+```rust
+let manager = ProcessManagerBuilder::default()
+    .handle_signals() // SIGTERM/SIGINT/SIGQUIT: graceful shutdown, SIGHUP: reload
+    .pre_insert(my_service)
+    .build();
+
+manager.process_start().await?; // Ok(()) after Ctrl-C once everything stopped
 ```
 
 ---
@@ -180,7 +186,7 @@ flowchart TD
 
 | Feature   | Default? | Description                                                         |
 | --------- | -------- | ------------------------------------------------------------------- |
-| `signal`  | no       | Activates `builtin::SignalReceiver` for Unix signal handling.        |
+| `signal`  | yes      | Activates `builtin::SignalReceiver` for Unix signal handling.        |
 | `tracing` | no       | Emit structured log events via the `tracing` crate.                 |
 | `log`     | no       | Use the `log` crate for textual logging if `tracing` is disabled.   |
 

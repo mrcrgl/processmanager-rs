@@ -1561,3 +1561,80 @@ mod abort_propagation {
         assert_stopped(&ticks).await;
     }
 }
+
+mod termination_request {
+    use super::*;
+    use processmanager::IdleProcess;
+
+    /// Asks its manager to stop, like a `SignalReceiver` after SIGTERM.
+    struct RequestsTermination;
+
+    impl Runnable for RequestsTermination {
+        fn process_start(&self) -> ProcFuture<'_> {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                Err(RuntimeError::TerminationSignal)
+            })
+        }
+
+        fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+            Arc::new(StubControlHandle)
+        }
+    }
+
+    /// Fails while shutting down.
+    #[derive(Default)]
+    struct FailsOnShutdown {
+        guard: RuntimeGuard,
+    }
+
+    impl Runnable for FailsOnShutdown {
+        fn process_start(&self) -> ProcFuture<'_> {
+            Box::pin(async {
+                let ticker = self.guard.runtime_ticker().await;
+                loop {
+                    if let ProcessOperation::Control(RuntimeControlMessage::Shutdown) =
+                        ticker.tick(std::future::pending::<()>()).await
+                    {
+                        return Err(RuntimeError::Internal {
+                            message: "failed while stopping".to_string(),
+                        });
+                    }
+                }
+            })
+        }
+
+        fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+            self.guard.handle()
+        }
+    }
+
+    #[tokio::test]
+    async fn termination_request_is_a_graceful_stop() {
+        let manager = ProcessManagerBuilder::default()
+            .pre_insert(RequestsTermination)
+            .pre_insert(IdleProcess::new())
+            .build();
+
+        let result = timeout(Duration::from_secs(2), manager.process_start())
+            .await
+            .expect("termination request must stop the manager");
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn failure_during_termination_is_reported() {
+        let manager = ProcessManagerBuilder::default()
+            .pre_insert(RequestsTermination)
+            .pre_insert(FailsOnShutdown::default())
+            .build();
+
+        let result = timeout(Duration::from_secs(2), manager.process_start())
+            .await
+            .expect("termination request must stop the manager");
+        assert!(
+            matches!(&result, Err(RuntimeError::Internal { message }) if message == "failed while stopping"),
+            "a real failure must win over the termination request, got {result:?}"
+        );
+    }
+}

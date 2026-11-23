@@ -282,6 +282,9 @@ impl Runnable for ProcessManager {
             let mut completion_rx = completion_rx.lock().await;
 
             let mut first_error: Option<RuntimeError> = None;
+            // Set when a child asked for a graceful stop by returning
+            // `RuntimeError::TerminationSignal` (e.g. `SignalReceiver`).
+            let mut termination_requested = false;
 
             loop {
                 #[cfg(feature = "tracing")]
@@ -310,10 +313,22 @@ impl Runnable for ProcessManager {
                                     inner.processes.lock().unwrap().retain(|c| c.id != cid);
                                 }
                             }
+                            // A termination request is a graceful stop, not a
+                            // failure: shut the siblings down, but don't
+                            // report it as the manager's error.
+                            Err(RuntimeError::TerminationSignal) => {
+                                if first_error.is_none() && !termination_requested {
+                                    termination_requested = true;
+                                    manager_handle.shutdown().await;
+                                }
+                            }
                             Err(err) => {
                                 if first_error.is_none() {
+                                    let already_stopping = termination_requested;
                                     first_error = Some(err);
-                                    manager_handle.shutdown().await;
+                                    if !already_stopping {
+                                        manager_handle.shutdown().await;
+                                    }
                                 }
                             }
                         }
@@ -374,6 +389,49 @@ impl Runnable for ProcessManager {
     fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
         Arc::new(Handle {
             inner: Arc::clone(&self.inner),
+        })
+    }
+}
+
+#[cfg(feature = "signal")]
+impl ProcessManager {
+    /// A handle that does not keep the manager alive.
+    ///
+    /// Used for children that need to control their own manager (e.g. the
+    /// `SignalReceiver` installed by `ProcessManagerBuilder::handle_signals`):
+    /// a strong handle stored inside one of the manager's own children would
+    /// form a reference cycle. Once the manager is gone, the handle's methods
+    /// do nothing.
+    #[cfg(feature = "signal")]
+    pub(crate) fn weak_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        Arc::new(WeakHandle {
+            inner: Arc::downgrade(&self.inner),
+        })
+    }
+}
+
+#[cfg(feature = "signal")]
+struct WeakHandle {
+    inner: std::sync::Weak<Inner>,
+}
+
+#[cfg(feature = "signal")]
+impl ProcessControlHandler for WeakHandle {
+    fn shutdown(&self) -> CtrlFuture<'_> {
+        let inner = self.inner.upgrade();
+        Box::pin(async move {
+            if let Some(inner) = inner {
+                Handle { inner }.shutdown().await;
+            }
+        })
+    }
+
+    fn reload(&self) -> CtrlFuture<'_> {
+        let inner = self.inner.upgrade();
+        Box::pin(async move {
+            if let Some(inner) = inner {
+                Handle { inner }.reload().await;
+            }
         })
     }
 }
@@ -613,6 +671,14 @@ fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) -> JoinHan
                 ::log::info!("Process {name}: stopped");
                 #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
                 eprintln!("Process {name}: stopped");
+            }
+            Err(RuntimeError::TerminationSignal) => {
+                #[cfg(feature = "tracing")]
+                ::tracing::info!(name = %name, "Process requested termination");
+                #[cfg(all(not(feature = "tracing"), feature = "log"))]
+                ::log::info!("Process {name}: requested termination");
+                #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
+                eprintln!("Process {name}: requested termination");
             }
             Err(err) => {
                 #[cfg(feature = "tracing")]

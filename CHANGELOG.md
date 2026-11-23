@@ -7,6 +7,9 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `ProcessManagerBuilder::handle_signals()` installs a `SignalReceiver` wired
+  to its manager: `SIGTERM`/`SIGINT`/`SIGQUIT` shut it down gracefully and
+  `SIGHUP` reloads all children (`#64`).
 - `Job` built-in for one-shot tasks such as migrations: runs an async closure
   once, shuts the manager down on failure unless marked `.optional()`, and is
   cancelled by shutdown (`#3`).
@@ -17,12 +20,24 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   child ran healthily for `duration` (default: 60s) (`#4`).
 
 ### Changed
+- A child ending with `RuntimeError::TerminationSignal` (e.g. a
+  `SignalReceiver` after Ctrl-C) is now treated as a graceful shutdown
+  request: the manager stops its other children and returns `Ok(())` instead
+  of `Err(TerminationSignal)`. A real failure of another child still wins
+  (`#64`).
+- `SignalReceiver` registers its signal handlers when it starts and removes
+  them when it stops; registration errors are returned from `process_start`
+  instead of panicking in `SignalReceiver::new` (`#64`).
 - `RestartSupervisor` backoff now resets after 60 seconds of healthy runtime
   instead of growing for the lifetime of the supervisor (`#4`).
 - `RestartSupervisor::process_name` now includes the child's name,
   e.g. `RestartSupervisor(my_crate::Worker)` (`#4`).
 
 ### Fixed
+- `SignalReceiver` no longer silently ignores `SIGHUP` (it reloads when
+  installed via `handle_signals()` and logs a warning otherwise), no longer
+  spins when its signal stream ends, and its docs match its behaviour
+  (`#64`).
 - Aborting or dropping a `RestartSupervisor` or a nested `ProcessManager`
   (e.g. after a parent's shutdown grace period) now aborts its children
   instead of leaving them running detached (`#63`).

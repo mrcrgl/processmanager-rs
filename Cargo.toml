@@ -38,3 +38,4 @@ once_cell = "1"
 
 [dev-dependencies]
 axum = "0.8"
+signal-hook = "0.3"
