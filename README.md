@@ -10,9 +10,9 @@ It takes care of
 * initiating a **graceful shutdown** of the whole tree once any process fails,
 * and optionally cleaning up completed children to avoid memory leaks.
 
-The crate is completely runtime-agnostic except for its dependency on Tokio
-tasks behind the scenes; you are free to use any async code in your own
-processes.
+Processes run as Tokio tasks, so running a manager requires a Tokio runtime;
+building one (and its processes) does not. Inside your processes you are free
+to use any async code.
 
 ---
 
@@ -36,7 +36,7 @@ processes.
 | Graceful shutdown                | Propagates a single `shutdown` request to **all** children.               |
 | Dynamic child management         | Add new `Runnable`s even while the manager is already running.            |
 | Error propagation                | A failing child triggers a global shutdown and returns the *first* error. |
-| Auto cleanup                     | Optionally remove finished children to keep memory usage bounded.         |
+| Auto cleanup                     | Finished children are removed to keep memory bounded (on by default).     |
 | Hierarchical composition         | Managers implement `Runnable` themselves → build arbitrary process trees. |
 | Built-in helpers                 | See [`IdleProcess`](#built-in-helpers), [`Job`](#built-in-helpers), [`RestartSupervisor`](#built-in-helpers) and [`SignalReceiver`](#built-in-helpers). |
 
@@ -178,7 +178,9 @@ flowchart TD
 * Every `Runnable` gets its own Tokio task.
 * A `ProcessControlHandler` allows external code to **shut down** or **reload**
   a single process or the whole subtree.
-* The first child that ends in `Err(_)` terminates the entire supervisor.
+* The first child that ends in `Err(_)` shuts down the entire supervisor,
+  which returns that error. A termination request (e.g. Ctrl-C via
+  `handle_signals()`) shuts it down gracefully and returns `Ok(())`.
 
 ---
 
@@ -190,15 +192,11 @@ flowchart TD
 | `tracing` | no       | Emit structured log events via the `tracing` crate.                 |
 | `log`     | no       | Use the `log` crate for textual logging if `tracing` is disabled.   |
 
-Pick one of `tracing` **or** `log` to avoid duplicate output.
+If both `tracing` and `log` are enabled, `tracing` is used. Without either,
+lifecycle events are printed to stderr.
 
 ---
 
 ## License
 
-Licensed under either of
-
-* Apache License, Version 2.0
-* MIT license
-
-at your option.
+Licensed under the [MIT license](LICENSE).

@@ -19,6 +19,12 @@ use tokio::select;
 
 use crate::{ProcessOperation, runtime_guard::GuardInner};
 
+/// Receiving end of a [`RuntimeGuard`](crate::RuntimeGuard): races the
+/// runnable's work against incoming control messages via
+/// [`tick`](Self::tick).
+///
+/// Created by [`RuntimeGuard::runtime_ticker`](crate::RuntimeGuard::runtime_ticker);
+/// only one may exist per guard at a time.
 pub struct RuntimeTicker {
     /// Shared with the guard. Holding it keeps the control channel open (the
     /// guard owns a sender), so `tick` never sees a closed channel.

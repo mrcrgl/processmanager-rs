@@ -1,31 +1,4 @@
-//! Restart supervisor for flaky child processes.
-//!
-//! `RestartSupervisor` supervises one child [`Runnable`]. When the child exits
-//! with an error (or panics), the supervisor restarts it after an exponential
-//! backoff delay.
-//!
-//! This is useful for services that should auto-recover from transient
-//! failures.
-//!
-//! Two knobs turn this into a crash policy:
-//!
-//! * [`RestartSupervisor::restart_limit`] gives up once the child fails too
-//!   often within a time window. The supervisor then returns an error, which
-//!   makes a parent [`ProcessManager`](crate::ProcessManager) shut down all
-//!   sibling processes.
-//! * [`RestartSupervisor::reset_after`] resets the backoff once the child has
-//!   run long enough, so a crash after a long healthy run is restarted quickly
-//!   again.
-//!
-//! The child runs in its own task. If the supervisor is dropped or aborted
-//! (e.g. by a parent manager after its shutdown grace period), that task is
-//! aborted too, so no child outlives its supervisor.
-//!
-//! On shutdown the supervisor forwards the request and waits for the child to
-//! stop, without a time limit of its own. Inside a
-//! [`ProcessManager`](crate::ProcessManager) that wait is bounded by the
-//! manager's shutdown grace period; when used on its own, wrap the
-//! supervisor's future in a timeout.
+//! Restart supervisor for flaky child processes; see [`RestartSupervisor`].
 use std::{
     borrow::Cow,
     collections::VecDeque,
@@ -132,11 +105,15 @@ pub struct RestartBackoff {
     pub initial: Duration,
     /// Maximum delay cap.
     pub max: Duration,
-    /// Multiplication factor for subsequent failures.
+    /// Multiplication factor for subsequent failures. [`RestartBackoff::new`]
+    /// clamps it to at least 1; set directly, `0` behaves like `1`.
     pub factor: u32,
 }
 
 impl RestartBackoff {
+    /// Backoff starting at `initial`, multiplied by `factor` after each further
+    /// failure and capped at `max`. A `factor` below 1 is treated as 1
+    /// (constant delay).
     pub fn new(initial: Duration, max: Duration, factor: u32) -> Self {
         Self {
             initial,
@@ -182,6 +159,33 @@ struct RestartLimit {
 const DEFAULT_RESET_AFTER: Duration = Duration::from_secs(60);
 
 /// Wraps one child [`Runnable`] and restarts it after failures with backoff.
+///
+/// `RestartSupervisor` supervises one child [`Runnable`]. When the child exits
+/// with an error (or panics), the supervisor restarts it after an exponential
+/// backoff delay.
+///
+/// This is useful for services that should auto-recover from transient
+/// failures.
+///
+/// Two knobs turn this into a crash policy:
+///
+/// * [`RestartSupervisor::restart_limit`] gives up once the child fails too
+///   often within a time window. The supervisor then returns an error, which
+///   makes a parent [`ProcessManager`](crate::ProcessManager) shut down all
+///   sibling processes.
+/// * [`RestartSupervisor::reset_after`] resets the backoff once the child has
+///   run long enough, so a crash after a long healthy run is restarted quickly
+///   again.
+///
+/// The child runs in its own task. If the supervisor is dropped or aborted
+/// (e.g. by a parent manager after its shutdown grace period), that task is
+/// aborted too, so no child outlives its supervisor.
+///
+/// On shutdown the supervisor forwards the request and waits for the child to
+/// stop, without a time limit of its own. Inside a
+/// [`ProcessManager`](crate::ProcessManager) that wait is bounded by the
+/// manager's shutdown grace period; when used on its own, wrap the
+/// supervisor's future in a timeout.
 pub struct RestartSupervisor {
     child: Arc<dyn Runnable>,
     child_handle: Arc<dyn ProcessControlHandler>,

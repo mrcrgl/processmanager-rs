@@ -1,46 +1,4 @@
-//! Central runtime control hub.
-//!
-//! `RuntimeGuard` owns two *async* channels: a **global control** channel that
-//! forwards messages from any number of [`RuntimeHandle`]s and the
-//! **ticker channel** consumed by exactly one [`RuntimeTicker`].
-//!
-//! The guard exposes three high-level operations:
-//!
-//! 1. [`runtime_ticker`](RuntimeGuard::runtime_ticker) – creates the sole ticker
-//!    and connects it to the control fan-out.
-//! 2. [`handle`](RuntimeGuard::handle) – returns a cheap, clonable
-//!    [`RuntimeHandle`] that broadcasts control messages.
-//! 3. [`is_running`](RuntimeGuard::is_running) /
-//!    [`block_until_shutdown`](RuntimeGuard::block_until_shutdown) – helpers
-//!    for observing runtime state in tests and demos.
-//!
-//! Dropping the ticker lets [`is_running`](crate::RuntimeGuard::is_running)
-//! report `false`. Creating a second ticker while one is alive is prohibited
-//! and will panic.
-//!
-//! Control messages are buffered in the guard's channel until a ticker reads
-//! them, so a message sent before the runnable has started is not lost. The
-//! guard spawns no task: it can be created outside a Tokio runtime, e.g. in
-//! synchronous setup code before `Runtime::block_on`.
-//!
-//! # Concurrency & safety
-//!
-//! `RuntimeGuard` is `Send + Sync`; the control receiver is protected by a
-//! `tokio::sync::Mutex` and the ticker invariant by an atomic flag.
-//!
-//! ---
-//!
-//! ```no_run
-//! # use processmanager::*;
-//! # async fn demo() {
-//! let guard  = RuntimeGuard::new();
-//! let ticker = guard.runtime_ticker().await;
-//! let handle = guard.handle();
-//!
-//! handle.reload().await;   // broadcast control instruction
-//! /* ... */
-//! # }
-//! ```
+//! Central runtime control hub; see [`RuntimeGuard`].
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -54,6 +12,38 @@ use crate::{CtrlFuture, RuntimeControlMessage, RuntimeHandle, RuntimeTicker};
 /// started. Further sends wait until the ticker has consumed one.
 const CONTROL_CHANNEL_CAPACITY: usize = 2;
 
+/// Control hub for one [`Runnable`](crate::Runnable): hands out
+/// [`RuntimeHandle`]s that send control messages, and the single
+/// [`RuntimeTicker`] that receives them.
+///
+/// * [`runtime_ticker`](Self::runtime_ticker) – creates the ticker, typically
+///   at the start of `process_start`. Only one ticker may be alive at a time;
+///   a second one panics. Once it is dropped, a new one can be created (the
+///   runnable can be started again).
+/// * [`handle`](Self::handle) – a cheap, clonable [`RuntimeHandle`], usually
+///   returned from `process_handle`.
+/// * [`is_running`](Self::is_running) /
+///   [`block_until_shutdown`](Self::block_until_shutdown) – observe whether a
+///   ticker is alive, mostly for tests and demos.
+///
+/// Control messages are buffered until the ticker reads them, so a message
+/// sent before the runnable has started is not lost. The guard spawns no task
+/// and can be created outside a Tokio runtime. Clones share the same state.
+///
+/// ```
+/// # use processmanager::*;
+/// # #[tokio::main] async fn main() {
+/// let guard = RuntimeGuard::new();
+/// let handle = guard.handle();
+/// handle.reload().await; // buffered: no ticker yet
+///
+/// let ticker = guard.runtime_ticker().await;
+/// match ticker.tick(std::future::pending::<()>()).await {
+///     ProcessOperation::Control(RuntimeControlMessage::Reload) => {}
+///     _ => unreachable!(),
+/// }
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct RuntimeGuard {
     inner: Arc<GuardInner>,

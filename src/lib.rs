@@ -1,67 +1,90 @@
+//! A light-weight, Tokio-based supervisor for long-running async tasks.
+//!
+//! A [`ProcessManager`] runs a set of [`Runnable`]s (*processes*), each in its
+//! own Tokio task, and coordinates them as a unit:
+//!
+//! * **Graceful shutdown** – [`ProcessControlHandler::shutdown`] reaches every
+//!   child; children that ignore it are aborted after a grace period.
+//! * **Error propagation** – the first child that fails shuts the others down
+//!   and its error is returned from [`ProcessManager::process_start`](Runnable::process_start).
+//! * **Reload** – [`ProcessControlHandler::reload`] is forwarded to every child.
+//! * **Trees** – a `ProcessManager` is itself a `Runnable`, so managers nest.
+//!
+//! Built-in helpers cover common needs: [`IdleProcess`], [`Job`] (one-shot
+//! tasks), [`RestartSupervisor`] (restart with backoff) and, with the `signal`
+//! feature, `SignalReceiver` via `ProcessManagerBuilder::handle_signals()`.
+//!
+//! Runnables can be constructed anywhere; running them requires a Tokio
+//! runtime.
+//!
+//! # Example
+//!
+//! A process reacts to control messages through a [`RuntimeGuard`]'s
+//! [`RuntimeTicker`] (or implement [`RunnableWithContext`] to skip the guard):
+//!
+//! ```
+//! use processmanager::*;
+//! use std::sync::Arc;
+//! use std::time::Duration;
+//!
+//! #[derive(Default)]
+//! struct Worker {
+//!     runtime_guard: RuntimeGuard,
+//! }
+//!
+//! impl Runnable for Worker {
+//!     fn process_start(&self) -> ProcFuture<'_> {
+//!         Box::pin(async {
+//!             let ticker = self.runtime_guard.runtime_ticker().await;
+//!             let mut interval = tokio::time::interval(Duration::from_millis(100));
+//!
+//!             loop {
+//!                 // Race one unit of work against control messages.
+//!                 match ticker.tick(interval.tick()).await {
+//!                     ProcessOperation::Next(_) => { /* do work */ }
+//!                     ProcessOperation::Control(RuntimeControlMessage::Shutdown) => break,
+//!                     ProcessOperation::Control(RuntimeControlMessage::Reload) => { /* reload */ }
+//!                     ProcessOperation::Control(_) => {}
+//!                 }
+//!             }
+//!             Ok(())
+//!         })
+//!     }
+//!
+//!     fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+//!         self.runtime_guard.handle()
+//!     }
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), RuntimeError> {
+//!     let manager = ProcessManagerBuilder::default()
+//!         .pre_insert(Worker::default())
+//!         .pre_insert(Job::new("migrate", || async { Ok(()) }))
+//!         .build();
+//!     let handle = manager.process_handle();
+//!
+//!     let run = tokio::spawn(async move { manager.process_start().await });
+//!
+//!     // Later: stop everything gracefully and wait for the result.
+//!     handle.shutdown().await;
+//!     run.await.expect("manager task panicked")
+//! }
+//! ```
+//!
+//! # Features
+//!
+//! * `signal` (default) – `SignalReceiver` and
+//!   `ProcessManagerBuilder::handle_signals()` for Unix signals.
+//! * `tracing` – log through the `tracing` crate.
+//! * `log` – log through the `log` crate (`tracing` wins if both are enabled).
+//!
+//! Without `tracing` or `log`, lifecycle events are printed to stderr.
 #![deny(rustdoc::broken_intra_doc_links)]
+#![warn(missing_docs)]
+
+/// Built-in [`Runnable`] helpers.
 pub mod builtin;
-/// Manage multiple running services. A ProcessManager collects impl of `Runnable`
-/// and takes over the runtime management like starting, stopping (graceful or in
-/// failure) of services.
-///
-/// ```rust
-/// use processmanager::*;
-/// use std::sync::Arc;
-///
-/// #[tokio::main]
-/// async fn main() {
-///
-///     #[derive(Default)]
-///     struct ExampleController {
-///         runtime_guard: RuntimeGuard,
-///     }
-///
-///     impl Runnable for ExampleController {
-///         fn process_start(&self) -> ProcFuture<'_> {
-///             Box::pin(async{
-///                 let ticker = self.runtime_guard.runtime_ticker().await;
-///
-///                 // This can be any type of future like an async streams
-///                 let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
-///
-///                 loop {
-///                     match ticker.tick(interval.tick()).await {
-///                         ProcessOperation::Next(_) => println!("work"),
-///                         ProcessOperation::Control(RuntimeControlMessage::Shutdown) => {
-///                             println!("shutdown");
-///                             break
-///                         },
-///                         ProcessOperation::Control(RuntimeControlMessage::Reload) => println!("trigger relead"),
-///                         ProcessOperation::Control(RuntimeControlMessage::Custom(_)) => println!("trigger custom action"),
-///                         ProcessOperation::Control(_) => unimplemented!(),
-///                     }
-///                 }
-///
-///                 Ok(())
-///             })
-///         }
-///
-///         fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
-///             self.runtime_guard.handle()
-///          }
-///     }
-///
-///     let manager = ProcessManagerBuilder::default()
-///         .pre_insert(ExampleController::default())
-///         .build();
-///
-///     let handle = manager.process_handle();
-///
-///     // start all processes
-///     let _ = tokio::spawn(async move {
-///         manager.process_start().await.expect("service start failed");
-///     });
-///
-///     // Shutdown waits for all services to shut down gracefully.
-///     handle.shutdown().await;
-/// }
-/// ```
-///
 mod error;
 mod process_manager;
 mod process_manager_builder;
@@ -78,8 +101,10 @@ pub use runtime_handle::*;
 pub use runtime_process::*;
 pub use runtime_ticker::*;
 
+/// Old location of [`builtin::SignalReceiver`].
 #[cfg(feature = "signal")]
 pub mod receiver {
+    /// Deprecated alias of [`SignalReceiver`](crate::builtin::SignalReceiver).
     #[deprecated(note = "use `processmanager::builtin::SignalReceiver` instead")]
-    pub use crate::builtin::SignalReceiver;
+    pub type SignalReceiver = crate::builtin::SignalReceiver;
 }

@@ -1,14 +1,14 @@
-/// Runtime-level traits and helper types.
-///
-/// This module defines:
-/// • [`Runnable`] – abstraction for long-running async components supervised by
-///   a `ProcessManager`.
-/// • [`RunnableWithContext`] – convenience trait that receives a runtime
-///   context and does not require implementors to manage `RuntimeGuard`.
-/// • [`ProcessControlHandler`] – fire-and-forget interface for broadcasting
-///   control messages.
-/// • [`RuntimeControlMessage`] – set of built-in control messages understood by
-///   the runtime helpers (`RuntimeGuard`, `RuntimeTicker`, …).
+//! Runtime-level traits and helper types.
+//!
+//! This module defines:
+//! • [`Runnable`] – abstraction for long-running async components supervised by
+//!   a `ProcessManager`.
+//! • [`RunnableWithContext`] – convenience trait that receives a runtime
+//!   context and does not require implementors to manage `RuntimeGuard`.
+//! • [`ProcessControlHandler`] – interface for sending shutdown / reload
+//!   requests.
+//! • [`RuntimeControlMessage`] – set of built-in control messages understood by
+//!   the runtime helpers (`RuntimeGuard`, `RuntimeTicker`, …).
 use super::RuntimeError;
 use std::borrow::Cow;
 use std::future::Future;
@@ -82,8 +82,12 @@ pub trait RunnableWithContext
 where
     Self: Send + Sync + 'static,
 {
+    /// Start the component. Use `ctx` to race work against control messages
+    /// ([`RuntimeContext::tick`]). The returned future resolves when the
+    /// process ends.
     fn process_start_with_context(&self, ctx: RuntimeContext) -> ProcFuture<'_>;
 
+    /// Human-readable name, used for logging only.
     fn process_name(&self) -> Cow<'static, str> {
         Cow::Borrowed(std::any::type_name::<Self>())
     }
@@ -102,6 +106,7 @@ impl<R> RuntimeContextRunnable<R>
 where
     R: RunnableWithContext,
 {
+    /// Wraps `inner`; equivalent to [`with_runtime_context`].
     pub fn new(inner: R) -> Self {
         Self {
             inner,
@@ -145,15 +150,32 @@ pub type CtrlFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 /// Minimal handle that external code can use to *control* a running
 /// [`Runnable`].
 ///
-/// All methods are **fire-and-forget**: they enqueue the requested control
-/// instruction and return once the message has been sent.
+/// How long the returned futures take depends on the implementation:
+///
+/// * A [`RuntimeHandle`](crate::RuntimeHandle) (from
+///   [`RuntimeGuard::handle`](crate::RuntimeGuard::handle)) returns once the
+///   message is queued; it waits only while the runnable's control buffer is
+///   full.
+/// * A [`ProcessManager`](crate::ProcessManager)'s handle broadcasts to all
+///   children: `shutdown` waits until they have stopped (children still
+///   running after the shutdown grace period are aborted), `reload` waits
+///   until every child has accepted the request.
+///
+/// The futures are lazy: nothing is sent until they are awaited.
 pub trait ProcessControlHandler: Send + Sync {
+    /// Request a graceful shutdown.
     fn shutdown(&self) -> CtrlFuture<'_>;
+    /// Request a reload (e.g. re-read configuration).
     fn reload(&self) -> CtrlFuture<'_>;
 }
 
+/// Result of [`RuntimeTicker::tick`] / [`RuntimeContext::tick`]: whichever
+/// completed first, the work future or a control message.
 pub enum ProcessOperation<T> {
+    /// The work future completed with this output.
     Next(T),
+    /// A control message arrived before the work future completed. The work
+    /// future was dropped.
     Control(RuntimeControlMessage),
 }
 

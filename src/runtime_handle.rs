@@ -4,7 +4,8 @@
 //! Cloning a `RuntimeHandle` is cheap – all clones share the same underlying
 //! channel.  The async [`shutdown`](ProcessControlHandler::shutdown) and
 //! [`reload`](ProcessControlHandler::reload) methods enqueue the requested
-//! operation and return immediately without waiting for it to be executed.
+//! operation without waiting for it to be executed; they only wait while the
+//! runtime's control buffer is full.
 //! Use [`RuntimeHandle::control`] or [`RuntimeHandle::custom`] to inject custom
 //! control messages.
 //

@@ -17,7 +17,10 @@ pub enum RuntimeError {
     /// A failure described only by a message, e.g. a panicking child or a
     /// child aborted after the shutdown grace period. Prefer
     /// [`RuntimeError::failed`] for errors that have a typed cause.
-    Internal { message: String },
+    Internal {
+        /// Description of the failure.
+        message: String,
+    },
     /// The process asked for a graceful stop, e.g. a `SignalReceiver` after
     /// `SIGTERM`. A `ProcessManager` treats it as a shutdown request, not as a
     /// failure.

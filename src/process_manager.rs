@@ -1,39 +1,5 @@
-//! Dynamic supervisor for asynchronous [`Runnable`] implementations.
-//
-//! A `ProcessManager` can
-//!
-//! • be filled with children *before* it is started via
-//!   [`insert`](ProcessManager::insert) (or [`add`](ProcessManager::add))
-//! • accept additional children *while it is running* via
-//!   [`add`](ProcessManager::add)
-//!
-//! Each child runs in its own Tokio task.  The first child that returns an
-//! `Err(_)` causes the supervisor to propagate `shutdown()` to all remaining
-//! children and to return that same error.  Children that finish successfully
-//! are (optionally) removed from the internal list so that long-running systems
-//! do not leak memory.
-//
-//! The type itself implements [`Runnable`], which means you can build an
-//! arbitrary process tree by nesting managers.
-//
-//! ```ignore
-//! # use processmanager::*;
-//! # #[derive(Default)] struct MyService;
-//! # impl Runnable for MyService {
-//! #     fn process_start(&self) -> ProcFuture<'_> { Box::pin(async { Ok(()) }) }
-//! #     fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
-//! #         unreachable!()
-//! #     }
-//! # }
-//! let root = ProcessManagerBuilder::default()
-//!     .pre_insert(MyService)                // add before start
-//!     .build();
-//!
-//! let handle = root.process_handle();
-//! tokio::spawn(async move { root.process_start().await.unwrap(); });
-//!
-//! handle.reload().await;                    // control a running manager
-//! ```
+//! Dynamic supervisor for asynchronous [`Runnable`] implementations; see
+//! [`ProcessManager`].
 use std::{
     borrow::Cow,
     sync::{
@@ -172,6 +138,42 @@ struct Inner {
 }
 
 /// Groups several [`Runnable`] instances and starts / stops them as a unit.
+///
+/// * Register children with [`insert`](Self::insert) /
+///   [`ProcessManagerBuilder::pre_insert`](crate::ProcessManagerBuilder::pre_insert)
+///   before start, or [`add`](Self::add) at any time until the manager stops.
+/// * [`process_start`](Runnable::process_start) runs each child in its own
+///   Tokio task and returns once all of them have ended.
+/// * The first child that fails makes the manager shut the others down and
+///   return that error. A child ending with
+///   [`RuntimeError::TerminationSignal`] (e.g. after Ctrl-C) triggers the
+///   same shutdown, but the manager returns `Ok(())`.
+/// * [`process_handle`](Runnable::process_handle) returns a handle whose
+///   `shutdown` / `reload` reach every child. Children still running after
+///   the [shutdown grace period](crate::ProcessManagerBuilder::shutdown_grace_period)
+///   are aborted.
+/// * Children that finish successfully are removed (on by default, see
+///   [`auto_cleanup`](crate::ProcessManagerBuilder::auto_cleanup)).
+///
+/// A `ProcessManager` is itself a [`Runnable`], so managers can be nested
+/// into trees. Prefer [`ProcessManagerBuilder`](crate::ProcessManagerBuilder)
+/// to construct one.
+///
+/// ```
+/// # use processmanager::*;
+/// # #[tokio::main] async fn main() {
+/// let root = ProcessManagerBuilder::default()
+///     .pre_insert(IdleProcess::new()) // registered before start
+///     .build();
+/// let handle = root.process_handle();
+///
+/// let run = tokio::spawn(async move { root.process_start().await });
+///
+/// handle.reload().await;   // control a running manager
+/// handle.shutdown().await; // stop it gracefully
+/// run.await.unwrap().unwrap();
+/// # }
+/// ```
 pub struct ProcessManager {
     id: usize,
     inner: Arc<Inner>,
