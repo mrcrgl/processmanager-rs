@@ -46,6 +46,15 @@ pub struct Job {
     runtime_guard: RuntimeGuard,
 }
 
+impl std::fmt::Debug for Job {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Job")
+            .field("name", &self.name)
+            .field("optional", &self.optional)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Job {
     /// Creates a required job named `name` that runs the future returned by
     /// `f`.
@@ -68,6 +77,7 @@ impl Job {
 
     /// Marks the job as optional: a failure is logged and the job reports
     /// success, so sibling processes keep running.
+    #[must_use = "`optional` returns the modified job"]
     pub fn optional(mut self) -> Self {
         self.optional = true;
         self

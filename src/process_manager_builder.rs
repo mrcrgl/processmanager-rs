@@ -45,6 +45,17 @@ pub struct ProcessManagerBuilder {
     initializers: Vec<BoxedInitializer>,
 }
 
+impl std::fmt::Debug for ProcessManagerBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProcessManagerBuilder")
+            .field("auto_cleanup", &self.auto_cleanup)
+            .field("custom_name", &self.custom_name)
+            .field("shutdown_grace_period", &self.shutdown_grace_period)
+            .field("initializers", &self.initializers.len())
+            .finish()
+    }
+}
+
 impl Default for ProcessManagerBuilder {
     fn default() -> Self {
         Self {
@@ -63,12 +74,14 @@ impl ProcessManagerBuilder {
     }
 
     /// Enable / disable automatic clean-up of finished children.
+    #[must_use = "builder methods return the modified builder"]
     pub fn auto_cleanup(mut self, enabled: bool) -> Self {
         self.auto_cleanup = enabled;
         self
     }
 
     /// Set a custom human-readable name for the supervisor.
+    #[must_use = "builder methods return the modified builder"]
     pub fn name<S: Into<Cow<'static, str>>>(mut self, name: S) -> Self {
         self.custom_name = Some(name.into());
         self
@@ -79,6 +92,7 @@ impl ProcessManagerBuilder {
     /// A child that is aborted after the grace period is reported to the
     /// supervisor as a [`RuntimeError::Internal`](crate::RuntimeError::Internal)
     /// naming that child.
+    #[must_use = "builder methods return the modified builder"]
     pub fn shutdown_grace_period(mut self, duration: Duration) -> Self {
         self.shutdown_grace_period = Some(duration);
         self
@@ -93,6 +107,7 @@ impl ProcessManagerBuilder {
     ///
     /// Signals are process-wide, so call this on the root manager only.
     #[cfg(all(unix, feature = "signal"))]
+    #[must_use = "builder methods return the modified builder"]
     pub fn handle_signals(mut self) -> Self {
         self.initializers.push(Box::new(|mgr: &mut ProcessManager| {
             let target = mgr.weak_handle();
@@ -104,6 +119,7 @@ impl ProcessManagerBuilder {
     /// Register a child that should be present right from the start.
     ///
     /// This is the compile-time safe counterpart to `ProcessManager::insert`.
+    #[must_use = "builder methods return the modified builder"]
     pub fn pre_insert(mut self, process: impl Runnable) -> Self {
         self.initializers
             .push(Box::new(move |mgr: &mut ProcessManager| {
@@ -115,6 +131,7 @@ impl ProcessManagerBuilder {
     }
 
     /// Finalise the configuration and return a ready-to-use [`ProcessManager`].
+    #[must_use = "the manager does nothing until it is started"]
     pub fn build(self) -> ProcessManager {
         // Construct base manager according to the chosen clean-up strategy.
         let mut mgr = ProcessManager::new();

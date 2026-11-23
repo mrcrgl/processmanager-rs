@@ -114,3 +114,42 @@ pub mod receiver {
     #[deprecated(note = "use `processmanager::builtin::SignalReceiver` instead")]
     pub type SignalReceiver = crate::builtin::SignalReceiver;
 }
+
+/// Compile-time checks that discarding a builder result is reported (#74).
+/// Each `compile_fail` case has a compiling twin that keeps the result, so a
+/// case cannot pass because of an unrelated error.
+///
+/// ```
+/// #![deny(unused_must_use)]
+/// # fn main() {
+/// use processmanager::*;
+/// use std::time::Duration;
+/// let _b = ProcessManagerBuilder::new().auto_cleanup(false);
+/// let _s = RestartSupervisor::new(IdleProcess::new()).reset_after(Duration::from_secs(1));
+/// let _j = Job::new("job", || async { Ok(()) }).optional();
+/// # }
+/// ```
+///
+/// ```compile_fail
+/// #![deny(unused_must_use)]
+/// # fn main() {
+/// processmanager::ProcessManagerBuilder::new().auto_cleanup(false);
+/// # }
+/// ```
+///
+/// ```compile_fail
+/// #![deny(unused_must_use)]
+/// # fn main() {
+/// use processmanager::*;
+/// RestartSupervisor::new(IdleProcess::new()).reset_after(std::time::Duration::from_secs(1));
+/// # }
+/// ```
+///
+/// ```compile_fail
+/// #![deny(unused_must_use)]
+/// # fn main() {
+/// processmanager::Job::new("job", || async { Ok(()) }).optional();
+/// # }
+/// ```
+#[cfg(doctest)]
+pub struct MustUseChecks;

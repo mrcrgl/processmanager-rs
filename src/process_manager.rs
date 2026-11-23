@@ -191,6 +191,21 @@ pub struct ProcessManager {
     pub(crate) auto_cleanup: bool,
 }
 
+impl std::fmt::Debug for ProcessManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("ProcessManager");
+        s.field("name", &self.process_name())
+            .field("auto_cleanup", &self.auto_cleanup)
+            .field("shutdown_grace_period", &self.inner.shutdown_grace_period);
+        // `try_lock`: never block (or deadlock) inside a `Debug` impl.
+        if let Ok(registry) = self.inner.registry.try_lock() {
+            s.field("phase", &registry.phase)
+                .field("children", &registry.children.len());
+        }
+        s.finish_non_exhaustive()
+    }
+}
+
 impl ProcessManager {
     /// Creates a fresh supervisor.
     ///
