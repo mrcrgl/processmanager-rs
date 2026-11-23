@@ -7,6 +7,13 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `RuntimeError::Failed(BoxError)` carries a child's own typed error
+  (transparent `Display`/`source`), created with `RuntimeError::failed(err)`
+  and read back with `RuntimeError::downcast_ref::<E>()`; `?` converts
+  `std::io::Error` (`#68`).
+- `RestartLimitExceeded`, returned (as `RuntimeError::Failed`) when a
+  `RestartSupervisor` gives up; it exposes the child, failure count, window
+  and the child's last error as `source` (`#68`).
 - `AddError` (`Stopped`, `ShuttingDown`), returned by `ProcessManager::add`
   (`#67`).
 - `ProcessManagerBuilder::handle_signals()` installs a `SignalReceiver` wired
@@ -22,6 +29,11 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   child ran healthily for `duration` (default: 60s) (`#4`).
 
 ### Changed
+- **Breaking:** `RuntimeError` is `#[non_exhaustive]`; `match` it with a
+  wildcard arm (`#68`).
+- `RestartSupervisor` no longer flattens errors into strings: giving up
+  returns `RestartLimitExceeded` and a child task join failure keeps its
+  `JoinError`, both as `RuntimeError::Failed` (`#68`).
 - **Breaking:** `ProcessManager::add` now returns `Result<(), AddError>`
   instead of panicking. Before the manager has started it queues the child
   (like `insert`); while running it spawns it; it returns

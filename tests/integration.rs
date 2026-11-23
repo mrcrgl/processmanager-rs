@@ -668,15 +668,24 @@ async fn test_restart_supervisor_gives_up_after_restart_limit() {
         .await
         .expect("restart supervisor must give up instead of retrying forever");
 
-    match result {
-        Err(RuntimeError::Internal { message }) => {
-            assert!(
-                message.contains("gave up") && message.contains("intentional permanent failure"),
-                "error must explain the give-up and carry the last failure, got: {message}"
-            );
-        }
-        other => panic!("expected give-up error, got {other:?}"),
-    }
+    let err = result.expect_err("supervisor must give up");
+    let gave_up = err
+        .downcast_ref::<processmanager::RestartLimitExceeded>()
+        .unwrap_or_else(|| panic!("expected RestartLimitExceeded, got {err:?}"));
+    assert_eq!(gave_up.failures(), 3);
+    assert!(gave_up.child().contains("AlwaysFailController"));
+    assert!(
+        matches!(gave_up.last_error(), RuntimeError::Internal { message } if message == "intentional permanent failure"),
+        "the child's last error must be kept, got {:?}",
+        gave_up.last_error()
+    );
+    // The chain: give-up -> last error.
+    let source = std::error::Error::source(gave_up).expect("last error as source");
+    assert!(source.to_string().contains("intentional permanent failure"));
+    assert!(
+        err.to_string().contains("gave up"),
+        "transparent Display: {err}"
+    );
     // initial run + 2 restarts, then the third failure exceeds the limit
     assert_eq!(attempts.load(Ordering::SeqCst), 3);
 }
@@ -701,9 +710,11 @@ async fn test_restart_supervisor_limit_shuts_down_siblings_in_manager() {
         .await
         .expect("manager must stop once the restart limit is exceeded");
 
+    let err = result.expect_err("manager must return the give-up error");
     assert!(
-        matches!(&result, Err(RuntimeError::Internal { message }) if message.contains("gave up")),
-        "manager must return the give-up error, got {result:?}"
+        err.downcast_ref::<processmanager::RestartLimitExceeded>()
+            .is_some(),
+        "manager must return the give-up error, got {err:?}"
     );
 }
 
@@ -1808,5 +1819,109 @@ mod add_contract {
         }
         let accepted = ACCEPTED.load(Ordering::SeqCst);
         eprintln!("add racing exit: {accepted}/100 accepted, the rest rejected");
+    }
+}
+
+mod runtime_error {
+    use super::*;
+    use std::error::Error as _;
+
+    #[derive(Debug)]
+    struct DbError {
+        code: u32,
+    }
+
+    impl std::fmt::Display for DbError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "database error {}", self.code)
+        }
+    }
+
+    impl std::error::Error for DbError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            None
+        }
+    }
+
+    /// Fails with a typed error through the manager.
+    struct FailsTyped;
+
+    impl Runnable for FailsTyped {
+        fn process_start(&self) -> ProcFuture<'_> {
+            Box::pin(async { Err(RuntimeError::failed(DbError { code: 42 })) })
+        }
+
+        fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+            Arc::new(StubControlHandle)
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_child_error_survives_the_manager() {
+        let manager = ProcessManagerBuilder::default()
+            .pre_insert(FailsTyped)
+            .build();
+        let err = timeout(Duration::from_secs(1), manager.process_start())
+            .await
+            .expect("manager must stop")
+            .expect_err("child failed");
+
+        let db = err
+            .downcast_ref::<DbError>()
+            .unwrap_or_else(|| panic!("typed error lost: {err:?}"));
+        assert_eq!(db.code, 42);
+        assert_eq!(err.to_string(), "database error 42");
+        assert!(err.source().is_none(), "transparent: no duplicate link");
+    }
+
+    #[test]
+    fn question_mark_converts_io_errors() {
+        fn body() -> Result<(), RuntimeError> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "config.toml",
+            ))?;
+            Ok(())
+        }
+        let err = body().unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<std::io::Error>().map(|e| e.kind()),
+            Some(std::io::ErrorKind::NotFound)
+        );
+    }
+
+    #[test]
+    fn source_chain_is_not_duplicated() {
+        #[derive(Debug)]
+        struct Outer(std::io::Error);
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "loading config failed")
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let err = RuntimeError::failed(Outer(std::io::Error::other("permission denied")));
+        let mut chain = vec![err.to_string()];
+        let mut next = err.source();
+        while let Some(e) = next {
+            chain.push(e.to_string());
+            next = e.source();
+        }
+        assert_eq!(chain, ["loading config failed", "permission denied"]);
+    }
+
+    #[test]
+    fn other_variants_have_no_source_or_downcast() {
+        let internal = RuntimeError::Internal {
+            message: "x".into(),
+        };
+        assert!(internal.source().is_none());
+        assert!(internal.downcast_ref::<std::io::Error>().is_none());
+        assert!(RuntimeError::TerminationSignal.source().is_none());
     }
 }
