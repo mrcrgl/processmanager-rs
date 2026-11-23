@@ -29,17 +29,15 @@ impl Runnable for ExampleController {
             loop {
                 match ticker.tick(interval.tick()).await {
                     ProcessOperation::Next(_) => {
-                        if let Some(die_after) = self.die_after {
-                            if started.add(die_after).lt(&tokio::time::Instant::now()) {
-                                return Err(RuntimeError::Internal {
-                                    message: format!("died after {:?}", die_after),
-                                });
-                            }
+                        let elapsed =
+                            |after: Duration| started.add(after).lt(&tokio::time::Instant::now());
+                        if let Some(die_after) = self.die_after.filter(|d| elapsed(*d)) {
+                            return Err(RuntimeError::Internal {
+                                message: format!("died after {:?}", die_after),
+                            });
                         }
-                        if let Some(exit_after) = self.exit_after {
-                            if started.add(exit_after).lt(&tokio::time::Instant::now()) {
-                                return Ok(());
-                            }
+                        if self.exit_after.is_some_and(elapsed) {
+                            return Ok(());
                         }
                         println!("work {}", self.id)
                     }
@@ -1186,7 +1184,7 @@ mod job {
     async fn shutdown_cancels_running_job() {
         let manager = ProcessManagerBuilder::default()
             .shutdown_grace_period(Duration::from_secs(5))
-            .pre_insert(Job::new("forever", || std::future::pending()))
+            .pre_insert(Job::new("forever", std::future::pending))
             .build();
         let handle = manager.process_handle();
         let run = tokio::spawn(async move { manager.process_start().await });
@@ -1794,12 +1792,10 @@ mod add_contract {
 
             // Aim the add at the moment the job finishes and the manager exits.
             tokio::time::sleep(Duration::from_micros(i * 20)).await;
-            let accepted = loop {
-                match manager.add(IdleProcess::new()) {
-                    Ok(()) => break true,
-                    Err(AddError::Stopped) => break false,
-                    Err(other) => panic!("unexpected {other:?}"),
-                }
+            let accepted = match manager.add(IdleProcess::new()) {
+                Ok(()) => true,
+                Err(AddError::Stopped) => false,
+                Err(other) => panic!("unexpected {other:?}"),
             };
 
             if accepted {

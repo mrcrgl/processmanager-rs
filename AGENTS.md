@@ -56,8 +56,11 @@ All checks must pass on all supported targets/toolchains defined by CI.
 
 Minimum required commands:
 - `cargo fmt --all -- --check`
-- `cargo clippy --all-features -- -D warnings`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo clippy --all-targets --no-default-features --features log -- -D warnings`
 - `cargo test --all`
 - `cargo test --no-default-features`
+- `cargo test --features log`
+- `cargo check --all-targets --all-features` on the MSRV (`rust-version` in `Cargo.toml`)
 
 If the CI matrix expands, these requirements expand with it.
