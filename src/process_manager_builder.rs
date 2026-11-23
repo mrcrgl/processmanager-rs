@@ -6,7 +6,8 @@
 //! the manager has already started.
 //!
 //! `ProcessManagerBuilder` makes the configuration phase explicit: every child,
-//! option or tweak is registered **before** [`Self::build`] returns a
+//! option or tweak is registered **before**
+//! [`build`](crate::ProcessManagerBuilder::build) returns a
 //! ready-to-run supervisor.
 //!
 //! Additional knobs (metrics, tracing, names, …) can be added here in the
