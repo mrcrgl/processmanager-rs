@@ -3,32 +3,31 @@
 //! A `RuntimeTicker` receives **control messages** from the runtime and
 //! concurrently drives a caller-supplied *work future*. Call
 //! [`tick`](crate::RuntimeTicker::tick) with the future that represents *one unit of user
-//! work*; the method races it against incoming [`RuntimeControlMessage`]s and
+//! work*; the method races it against incoming
+//! [`RuntimeControlMessage`](crate::RuntimeControlMessage)s and
 //! returns a [`ProcessOperation`] that tells the caller what happened first.
 //!
 //! The ticker is created internally by
 //! [`RuntimeGuard::runtime_ticker`](crate::RuntimeGuard::runtime_ticker). Only
 //! one ticker may exist at any time.
-use std::future::Future;
-use std::sync::Arc;
+use std::{
+    future::Future,
+    sync::{Arc, atomic::Ordering},
+};
 
-use tokio::{select, sync::Mutex};
+use tokio::select;
 
-use crate::{ProcessOperation, RuntimeControlMessage};
+use crate::{ProcessOperation, runtime_guard::GuardInner};
 
 pub struct RuntimeTicker {
-    control_ch_receiver: Arc<Mutex<tokio::sync::mpsc::Receiver<RuntimeControlMessage>>>,
+    /// Shared with the guard. Holding it keeps the control channel open (the
+    /// guard owns a sender), so `tick` never sees a closed channel.
+    guard: Arc<GuardInner>,
 }
 
 impl RuntimeTicker {
-    pub(crate) fn new() -> (Self, tokio::sync::mpsc::Sender<RuntimeControlMessage>) {
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        (
-            Self {
-                control_ch_receiver: Arc::new(Mutex::new(receiver)),
-            },
-            sender,
-        )
+    pub(crate) fn new(guard: Arc<GuardInner>) -> Self {
+        Self { guard }
     }
 
     /// Race `fut` against the next control message and return the winner.
@@ -41,14 +40,19 @@ impl RuntimeTicker {
     where
         Fut: Future<Output = O>,
     {
-        let mut lock = self.control_ch_receiver.lock().await;
+        let mut control_rx = self.guard.control_rx.lock().await;
 
         select! {
-            res = fut                => ProcessOperation::Next(res),
-            msg = lock.recv() => match msg {
-                Some(c) => ProcessOperation::Control(c),
-                None    => unreachable!("control channel closed unexpectedly"),
-            },
+            res = fut => ProcessOperation::Next(res),
+            // The channel cannot close while this ticker exists (see `guard`);
+            // should it ever, the branch is disabled and only `fut` is awaited.
+            Some(msg) = control_rx.recv() => ProcessOperation::Control(msg),
         }
+    }
+}
+
+impl Drop for RuntimeTicker {
+    fn drop(&mut self) {
+        self.guard.ticker_alive.store(false, Ordering::SeqCst);
     }
 }

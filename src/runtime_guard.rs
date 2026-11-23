@@ -14,16 +14,19 @@
 //!    [`block_until_shutdown`](RuntimeGuard::block_until_shutdown) – helpers
 //!    for observing runtime state in tests and demos.
 //!
-//! Dropping the ticker closes the channel which in turn lets
-//! [`is_running`](crate::RuntimeGuard::is_running) report `false`.  Constructing a second ticker is prohibited and will panic.
+//! Dropping the ticker lets [`is_running`](crate::RuntimeGuard::is_running)
+//! report `false`. Creating a second ticker while one is alive is prohibited
+//! and will panic.
 //!
-//! Internally the guard spawns a “fan-out” task that waits for control messages
-//! and forwards them to the ticker once it exists.
+//! Control messages are buffered in the guard's channel until a ticker reads
+//! them, so a message sent before the runnable has started is not lost. The
+//! guard spawns no task: it can be created outside a Tokio runtime, e.g. in
+//! synchronous setup code before `Runtime::block_on`.
 //!
 //! # Concurrency & safety
 //!
-//! All interior mutability is protected by `tokio::sync::Mutex`; therefore
-//! `RuntimeGuard` is `Send + Sync`.
+//! `RuntimeGuard` is `Send + Sync`; the control receiver is protected by a
+//! `tokio::sync::Mutex` and the ticker invariant by an atomic flag.
 //!
 //! ---
 //!
@@ -38,128 +41,86 @@
 //! /* ... */
 //! # }
 //! ```
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, mpsc};
 
 use crate::{CtrlFuture, RuntimeControlMessage, RuntimeHandle, RuntimeTicker};
 
+/// Number of control messages buffered while the runnable is busy or not yet
+/// started. Further sends wait until the ticker has consumed one.
+const CONTROL_CHANNEL_CAPACITY: usize = 2;
+
 #[derive(Debug, Clone)]
 pub struct RuntimeGuard {
-    inner: Arc<Inner>,
+    inner: Arc<GuardInner>,
 }
 
+/// State shared by a guard, its clones and its ticker.
 #[derive(Debug)]
-struct Inner {
-    runtime_ticker_ch_sender: Arc<Mutex<Option<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>>,
-    control_ch_sender: Arc<Mutex<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>,
-    ticker_ready: Arc<Notify>,
-}
-
-async fn wait_for_ticker_sender(
-    sender_slot: Arc<Mutex<Option<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>>,
-    ticker_ready: Arc<Notify>,
-) -> tokio::sync::mpsc::Sender<RuntimeControlMessage> {
-    loop {
-        // Register interest before checking state to avoid missing notifications.
-        let notified = ticker_ready.notified();
-
-        if let Some(sender) = sender_slot.lock().await.clone()
-            && !sender.is_closed()
-        {
-            return sender;
-        }
-
-        notified.await;
-    }
+pub(crate) struct GuardInner {
+    /// Cloned into every [`RuntimeHandle`]. Holding it here also keeps the
+    /// channel open for as long as the guard or its ticker exists.
+    control_tx: mpsc::Sender<RuntimeControlMessage>,
+    /// Read by the (single) live ticker.
+    pub(crate) control_rx: Mutex<mpsc::Receiver<RuntimeControlMessage>>,
+    /// `true` while a ticker exists.
+    pub(crate) ticker_alive: AtomicBool,
 }
 
 impl RuntimeGuard {
-    /// Create a fresh guard and spawn the internal *fan-out* task.
+    /// Create a fresh guard.
     ///
-    /// The returned instance is ready for immediate use; you typically call
-    /// [`runtime_ticker`](Self::runtime_ticker) right after construction.
+    /// This spawns no task and does not require a Tokio runtime. You typically
+    /// call [`runtime_ticker`](Self::runtime_ticker) from the runnable's
+    /// `process_start`.
     pub fn new() -> Self {
-        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-
-        let ticker_sender: Arc<Mutex<Option<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>> =
-            Arc::new(Mutex::new(None));
-        let ticker_ready = Arc::new(Notify::new());
-
-        let fanout_sender = Arc::clone(&ticker_sender);
-        let fanout_ready = Arc::clone(&ticker_ready);
-
-        // Fan-out task: forward messages from the central control channel to
-        // the (single) ticker once it has been created.
-        tokio::spawn(async move {
-            while let Some(msg) = receiver.recv().await {
-                let mut pending = msg;
-                loop {
-                    let ticker = wait_for_ticker_sender(
-                        Arc::clone(&fanout_sender),
-                        Arc::clone(&fanout_ready),
-                    )
-                    .await;
-
-                    match ticker.send(pending).await {
-                        Ok(_) => break,
-                        Err(err) => {
-                            // Ticker may have dropped between readiness check and send.
-                            // Keep the message and retry once a new ticker is available.
-                            pending = err.0;
-                        }
-                    }
-                }
-            }
-        });
-
+        let (control_tx, control_rx) = mpsc::channel(CONTROL_CHANNEL_CAPACITY);
         Self {
-            inner: Arc::new(Inner {
-                runtime_ticker_ch_sender: ticker_sender,
-                control_ch_sender: Arc::new(Mutex::new(sender)),
-                ticker_ready,
+            inner: Arc::new(GuardInner {
+                control_tx,
+                control_rx: Mutex::new(control_rx),
+                ticker_alive: AtomicBool::new(false),
             }),
         }
     }
 
-    /// Create the **single** [`RuntimeTicker`] and connect it to the fan-out.
+    /// Create the **single** [`RuntimeTicker`].
+    ///
+    /// Control messages sent before this call (e.g. a shutdown requested before
+    /// the runnable started) are delivered to the new ticker.
     ///
     /// # Panics
-    /// Panics if a ticker has already been created – i.e. the runtime is
+    /// Panics if a ticker for this guard is still alive – i.e. the runtime is
     /// considered “running”.
     pub async fn runtime_ticker(&self) -> RuntimeTicker {
+        let already_running = self.inner.ticker_alive.swap(true, Ordering::SeqCst);
         assert!(
-            !self.is_running().await,
+            !already_running,
             "process already started – only one ticker allowed"
         );
-
-        let mut lock = self.inner.runtime_ticker_ch_sender.lock().await;
-        let (ticker, sender) = RuntimeTicker::new();
-        lock.replace(sender);
-        self.inner.ticker_ready.notify_waiters();
-        ticker
+        RuntimeTicker::new(Arc::clone(&self.inner))
     }
 
     /// Returns `true` while the ticker (and therefore the runtime) is alive.
     pub async fn is_running(&self) -> bool {
-        let lock = self.inner.runtime_ticker_ch_sender.lock().await;
-        let closed = lock.as_ref().map(|s| s.is_closed()).unwrap_or(true);
-        !closed
+        self.inner.ticker_alive.load(Ordering::SeqCst)
     }
 
-    /// Obtain a clonable [`RuntimeHandle`] that broadcasts control messages to
-    /// the ticker.
+    /// Obtain a clonable [`RuntimeHandle`] that sends control messages to the
+    /// ticker.
     pub fn handle(&self) -> Arc<RuntimeHandle> {
-        Arc::new(RuntimeHandle::new(Arc::clone(
-            &self.inner.control_ch_sender,
-        )))
+        Arc::new(RuntimeHandle::new(self.inner.control_tx.clone()))
     }
 
     /// Send an arbitrary runtime control message.
     pub fn control(&self, msg: RuntimeControlMessage) -> CtrlFuture<'_> {
         Box::pin(async move {
-            let ch = self.inner.control_ch_sender.lock().await;
-            let _ = ch.send(msg).await;
+            // Cannot fail: the guard itself keeps the receiver alive.
+            let _ = self.inner.control_tx.send(msg).await;
         })
     }
 

@@ -34,6 +34,15 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   e.g. `RestartSupervisor(my_crate::Worker)` (`#4`).
 
 ### Fixed
+- `RuntimeGuard` no longer spawns a background task, so `RuntimeGuard::new`
+  and the built-ins using it (`IdleProcess`, `Job`, `RestartSupervisor`,
+  `SignalReceiver`, `with_runtime_context`) can be constructed outside a
+  Tokio runtime, e.g. while building a manager before `Runtime::block_on`
+  (`#65`).
+- `RuntimeTicker::tick` no longer panics with `unreachable!` after its
+  `RuntimeGuard` and handles are dropped (`#66`).
+- Two concurrent `runtime_ticker()` calls can no longer both succeed, and a
+  `RuntimeHandle` that outlives its runtime no longer hangs (`#72`).
 - `SignalReceiver` no longer silently ignores `SIGHUP` (it reloads when
   installed via `handle_signals()` and logs a warning otherwise), no longer
   spins when its signal stream ends, and its docs match its behaviour

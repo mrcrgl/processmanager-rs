@@ -10,7 +10,7 @@
 //
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 
 use crate::{CtrlFuture, ProcessControlHandler, RuntimeControlMessage};
 
@@ -21,21 +21,21 @@ use crate::{CtrlFuture, ProcessControlHandler, RuntimeControlMessage};
 /// cloned and sent across tasks at will.
 #[derive(Debug, Clone)]
 pub struct RuntimeHandle {
-    control_ch: Arc<Mutex<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>,
+    control_ch: mpsc::Sender<RuntimeControlMessage>,
 }
 
 impl RuntimeHandle {
-    pub(crate) fn new(
-        control_ch: Arc<Mutex<tokio::sync::mpsc::Sender<RuntimeControlMessage>>>,
-    ) -> Self {
+    pub(crate) fn new(control_ch: mpsc::Sender<RuntimeControlMessage>) -> Self {
         Self { control_ch }
     }
 
     /// Send an arbitrary runtime control message.
+    ///
+    /// Waits while the runtime's control buffer is full. If the runtime (its
+    /// guard and ticker) no longer exists, the message is dropped.
     pub fn control(&self, msg: RuntimeControlMessage) -> CtrlFuture<'_> {
         Box::pin(async move {
-            let ch = self.control_ch.lock().await;
-            let _ = ch.send(msg).await;
+            let _ = self.control_ch.send(msg).await;
         })
     }
 
