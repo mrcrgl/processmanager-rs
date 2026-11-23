@@ -54,6 +54,14 @@ pub struct RuntimeContext {
     handle: Arc<dyn ProcessControlHandler>,
 }
 
+impl std::fmt::Debug for RuntimeContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeContext")
+            .field("ticker", &self.ticker)
+            .finish_non_exhaustive()
+    }
+}
+
 impl RuntimeContext {
     fn new(ticker: RuntimeTicker, handle: Arc<dyn ProcessControlHandler>) -> Self {
         Self { ticker, handle }
@@ -115,6 +123,18 @@ where
     }
 }
 
+impl<R> std::fmt::Debug for RuntimeContextRunnable<R>
+where
+    R: RunnableWithContext,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeContextRunnable")
+            .field("inner", &self.inner.process_name())
+            .field("runtime_guard", &self.runtime_guard)
+            .finish()
+    }
+}
+
 /// Wrap a [`RunnableWithContext`] for use anywhere a [`Runnable`] is expected.
 pub fn with_runtime_context<R>(runnable: R) -> RuntimeContextRunnable<R>
 where
@@ -171,6 +191,7 @@ pub trait ProcessControlHandler: Send + Sync {
 
 /// Result of [`RuntimeTicker::tick`] / [`RuntimeContext::tick`]: whichever
 /// completed first, the work future or a control message.
+#[derive(Debug)]
 pub enum ProcessOperation<T> {
     /// The work future completed with this output.
     Next(T),

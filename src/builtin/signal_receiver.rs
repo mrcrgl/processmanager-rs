@@ -55,6 +55,15 @@ pub struct SignalReceiver {
     runtime_guard: RuntimeGuard,
 }
 
+impl std::fmt::Debug for SignalReceiver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignalReceiver")
+            .field("wired_to_manager", &self.target.is_some())
+            .field("runtime_guard", &self.runtime_guard)
+            .finish()
+    }
+}
+
 impl SignalReceiver {
     /// Creates a stand-alone receiver.
     ///

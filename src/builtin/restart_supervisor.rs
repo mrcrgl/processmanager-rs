@@ -196,6 +196,17 @@ pub struct RestartSupervisor {
     control_poll: Duration,
 }
 
+impl std::fmt::Debug for RestartSupervisor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RestartSupervisor")
+            .field("child", &self.child.process_name())
+            .field("backoff", &self.backoff)
+            .field("restart_limit", &self.restart_limit)
+            .field("reset_after", &self.reset_after)
+            .finish_non_exhaustive()
+    }
+}
+
 impl RestartSupervisor {
     /// Wraps `child`, restarting it after every failure with the default
     /// [`RestartBackoff`], no restart limit and a backoff reset after
@@ -215,6 +226,7 @@ impl RestartSupervisor {
     }
 
     /// Sets the backoff applied between restarts.
+    #[must_use = "builder methods return the modified supervisor"]
     pub fn backoff(mut self, backoff: RestartBackoff) -> Self {
         self.backoff = backoff;
         self
@@ -231,6 +243,7 @@ impl RestartSupervisor {
     ///
     /// `max_restarts == 0` means the first failure is final. Without this
     /// setting the child is restarted indefinitely.
+    #[must_use = "builder methods return the modified supervisor"]
     pub fn restart_limit(mut self, max_restarts: u32, window: Duration) -> Self {
         self.restart_limit = Some(RestartLimit {
             max_restarts,
@@ -243,6 +256,7 @@ impl RestartSupervisor {
     /// for at least `duration` before it failed.
     ///
     /// Defaults to 60 seconds.
+    #[must_use = "builder methods return the modified supervisor"]
     pub fn reset_after(mut self, duration: Duration) -> Self {
         self.reset_after = duration;
         self

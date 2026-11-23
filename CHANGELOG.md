@@ -7,6 +7,12 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `Debug` for `ProcessManager`, `ProcessManagerBuilder`, `RuntimeTicker`,
+  `RuntimeContext`, `RuntimeContextRunnable`, `ProcessOperation`, `Job`,
+  `RestartSupervisor` and `SignalReceiver`. Types holding closures or trait
+  objects print names and configuration (#74).
+- `#[must_use]` on the by-value builder methods of `ProcessManagerBuilder`,
+  `RestartSupervisor` and `Job`, so a discarded result is reported (#74).
 - `rust-version = "1.85"` in `Cargo.toml`, checked by a new MSRV CI job (#70).
 - `RuntimeError::Failed(BoxError)` carries a child's own typed error
   (transparent `Display`/`source`), created with `RuntimeError::failed(err)`

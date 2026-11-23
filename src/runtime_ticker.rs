@@ -25,6 +25,7 @@ use crate::{ProcessOperation, runtime_guard::GuardInner};
 ///
 /// Created by [`RuntimeGuard::runtime_ticker`](crate::RuntimeGuard::runtime_ticker);
 /// only one may exist per guard at a time.
+#[derive(Debug)]
 pub struct RuntimeTicker {
     /// Shared with the guard. Holding it keeps the control channel open (the
     /// guard owns a sender), so `tick` never sees a closed channel.
