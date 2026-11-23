@@ -33,7 +33,6 @@ type BoxedInitializer = Box<dyn FnOnce(&mut ProcessManager) + Send>;
 ///     .pre_insert(MySvc)       // add before start
 ///     .build();
 /// ```
-#[derive(Default)]
 pub struct ProcessManagerBuilder {
     /// Whether to clean up finished children automatically.
     auto_cleanup: bool,
@@ -44,6 +43,17 @@ pub struct ProcessManagerBuilder {
     /// Deferred actions that will be executed against the manager right before
     /// it is returned to the caller.
     initializers: Vec<BoxedInitializer>,
+}
+
+impl Default for ProcessManagerBuilder {
+    fn default() -> Self {
+        Self {
+            auto_cleanup: true,
+            custom_name: None,
+            shutdown_grace_period: None,
+            initializers: Vec::new(),
+        }
+    }
 }
 
 impl ProcessManagerBuilder {
@@ -106,5 +116,26 @@ impl ProcessManagerBuilder {
         }
 
         mgr
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_cleanup_is_enabled_by_default() {
+        assert!(ProcessManagerBuilder::default().build().auto_cleanup);
+        assert!(ProcessManagerBuilder::new().build().auto_cleanup);
+    }
+
+    #[test]
+    fn auto_cleanup_can_be_disabled() {
+        assert!(
+            !ProcessManagerBuilder::default()
+                .auto_cleanup(false)
+                .build()
+                .auto_cleanup
+        );
     }
 }
