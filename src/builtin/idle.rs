@@ -6,7 +6,9 @@
 //! caller broadcasts [`ProcessControlHandler::shutdown`].
 //!
 //! # Example
-//! ```no_run
+//! Constructing it needs no Tokio runtime:
+//!
+//! ```
 //! use processmanager::{IdleProcess, ProcessManagerBuilder};
 //!
 //! // Supervisor without real children that should stay alive.
