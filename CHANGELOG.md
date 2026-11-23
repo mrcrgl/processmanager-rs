@@ -7,6 +7,9 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `Job` built-in for one-shot tasks such as migrations: runs an async closure
+  once, shuts the manager down on failure unless marked `.optional()`, and is
+  cancelled by shutdown (`#3`).
 - `RestartSupervisor::restart_limit(max_restarts, window)`: give up and return
   an error once a child fails too often within a time window, which shuts
   down sibling processes in a `ProcessManager` (`#4`).

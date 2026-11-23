@@ -1072,3 +1072,158 @@ async fn test_nested_process_runnable_multiple_one_exits_2() {
         "expected time out"
     );
 }
+
+mod job {
+    use super::*;
+    use processmanager::{IdleProcess, Job};
+
+    #[tokio::test]
+    async fn required_job_runs_once_and_manager_finishes() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let manager = ProcessManagerBuilder::default()
+            .pre_insert(Job::new("count", {
+                let runs = Arc::clone(&runs);
+                move || {
+                    let runs = Arc::clone(&runs);
+                    async move {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    }
+                }
+            }))
+            .build();
+
+        let result = timeout(Duration::from_secs(1), manager.process_start())
+            .await
+            .expect("manager must finish after its only job");
+        assert!(result.is_ok(), "got {result:?}");
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn successful_job_leaves_siblings_running() {
+        let manager = ProcessManagerBuilder::default()
+            .pre_insert(Job::new("ok", || async { Ok(()) }))
+            .pre_insert(IdleProcess::default())
+            .build();
+        let handle = manager.process_handle();
+        let run = tokio::spawn(async move { manager.process_start().await });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!run.is_finished(), "sibling must keep the manager running");
+
+        handle.shutdown().await;
+        let result = timeout(Duration::from_secs(1), run)
+            .await
+            .expect("manager must stop after shutdown")
+            .expect("manager task panicked");
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn failed_required_job_shuts_down_manager() {
+        let manager = ProcessManagerBuilder::default()
+            .pre_insert(Job::new("migrate", || async {
+                Err(RuntimeError::Internal {
+                    message: "migration failed".to_string(),
+                })
+            }))
+            .pre_insert(IdleProcess::default())
+            .build();
+
+        let result = timeout(Duration::from_secs(1), manager.process_start())
+            .await
+            .expect("a failed required job must stop the manager");
+        assert!(
+            matches!(&result, Err(RuntimeError::Internal { message }) if message == "migration failed"),
+            "got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_optional_job_leaves_siblings_running() {
+        let manager = ProcessManagerBuilder::default()
+            .pre_insert(
+                Job::new("warm-cache", || async {
+                    Err(RuntimeError::Internal {
+                        message: "cache unavailable".to_string(),
+                    })
+                })
+                .optional(),
+            )
+            .pre_insert(IdleProcess::default())
+            .build();
+        let handle = manager.process_handle();
+        let run = tokio::spawn(async move { manager.process_start().await });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !run.is_finished(),
+            "optional failure must not stop the manager"
+        );
+
+        handle.shutdown().await;
+        let result = timeout(Duration::from_secs(1), run)
+            .await
+            .expect("manager must stop after shutdown")
+            .expect("manager task panicked");
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_running_job() {
+        let manager = ProcessManagerBuilder::default()
+            .shutdown_grace_period(Duration::from_secs(5))
+            .pre_insert(Job::new("forever", || std::future::pending()))
+            .build();
+        let handle = manager.process_handle();
+        let run = tokio::spawn(async move { manager.process_start().await });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let started = tokio::time::Instant::now();
+        handle.shutdown().await;
+        let result = timeout(Duration::from_secs(1), run)
+            .await
+            .expect("job must be cancelled well before the grace period")
+            .expect("manager task panicked");
+        assert!(result.is_ok(), "got {result:?}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn job_in_restart_supervisor_is_retried() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let job = Job::new("flaky", {
+            let runs = Arc::clone(&runs);
+            move || {
+                let runs = Arc::clone(&runs);
+                async move {
+                    if runs.fetch_add(1, Ordering::SeqCst) < 2 {
+                        Err(RuntimeError::Internal {
+                            message: "not yet".to_string(),
+                        })
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+        });
+        let wrapper = RestartSupervisor::new(job).backoff(RestartBackoff::new(
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+            1,
+        ));
+
+        let result = timeout(Duration::from_secs(1), wrapper.process_start())
+            .await
+            .expect("retried job must eventually succeed");
+        assert!(result.is_ok(), "got {result:?}");
+        assert_eq!(runs.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn job_name_is_process_name() {
+        let job = Job::new("migrate", || async { Ok(()) });
+        assert_eq!(job.process_name(), "migrate");
+    }
+}
