@@ -60,6 +60,12 @@ impl RuntimeTicker {
 
 impl Drop for RuntimeTicker {
     fn drop(&mut self) {
+        // Messages this run never read were meant for it, not for the next
+        // run (#72). Drained before the next ticker can be created. The lock
+        // is free: `tick` borrows the ticker, so none can be in progress.
+        if let Ok(mut control_rx) = self.guard.control_rx.try_lock() {
+            while control_rx.try_recv().is_ok() {}
+        }
         self.guard.ticker_alive.store(false, Ordering::SeqCst);
     }
 }
