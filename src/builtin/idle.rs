@@ -1,6 +1,6 @@
 //! A no-op [`Runnable`] that idles until it receives a shutdown request.
 //!
-//! `IdleProcess` is useful as a *tombstone* child for a [`ProcessManager`] that
+//! `IdleProcess` is useful as a *tombstone* child for a [`ProcessManager`](crate::ProcessManager) that
 //! would otherwise terminate immediately because it has no real children.
 //! Registering an `IdleProcess` keeps the supervisor alive until an external
 //! caller broadcasts [`ProcessControlHandler::shutdown`].

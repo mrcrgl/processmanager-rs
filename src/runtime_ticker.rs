@@ -2,11 +2,12 @@
 //!
 //! A `RuntimeTicker` receives **control messages** from the runtime and
 //! concurrently drives a caller-supplied *work future*. Call
-//! [`tick`](Self::tick) with the future that represents *one unit of user
+//! [`tick`](crate::RuntimeTicker::tick) with the future that represents *one unit of user
 //! work*; the method races it against incoming [`RuntimeControlMessage`]s and
 //! returns a [`ProcessOperation`] that tells the caller what happened first.
 //!
-//! The ticker is created internally by [`RuntimeGuard::runtime_ticker`]. Only
+//! The ticker is created internally by
+//! [`RuntimeGuard::runtime_ticker`](crate::RuntimeGuard::runtime_ticker). Only
 //! one ticker may exist at any time.
 use std::future::Future;
 use std::sync::Arc;

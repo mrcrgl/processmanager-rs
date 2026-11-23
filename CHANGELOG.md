@@ -7,6 +7,9 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Broken intra-doc links in private module docs (`IdleProcess`,
+  `SignalReceiver`, `ProcessManagerBuilder`, `RuntimeGuard`, `RuntimeTicker`)
+  and a duplicated doc sentence on `RuntimeControlMessage` (`#57`).
 - `ProcessManager::process_start` no longer hangs when a child is force-aborted
   after `shutdown_grace_period`; the aborted child is reported as a
   `RuntimeError::Internal` naming it, and the first error is still returned

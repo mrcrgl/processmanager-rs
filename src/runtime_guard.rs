@@ -14,8 +14,8 @@
 //!    [`block_until_shutdown`](RuntimeGuard::block_until_shutdown) – helpers
 //!    for observing runtime state in tests and demos.
 //!
-//! Dropping the ticker closes the channel which in turn lets [`is_running`]
-//! report `false`.  Constructing a second ticker is prohibited and will panic.
+//! Dropping the ticker closes the channel which in turn lets
+//! [`is_running`](crate::RuntimeGuard::is_running) report `false`.  Constructing a second ticker is prohibited and will panic.
 //!
 //! Internally the guard spawns a “fan-out” task that waits for control messages
 //! and forwards them to the ticker once it exists.

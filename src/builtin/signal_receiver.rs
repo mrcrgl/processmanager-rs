@@ -1,7 +1,7 @@
 //! Unix signal integration.
 //!
 //! `SignalReceiver` listens for `SIGHUP`, `SIGINT`, `SIGTERM`, and `SIGQUIT` and
-//! converts them into runtime-level control events so a [`ProcessManager`] can
+//! converts them into runtime-level control events so a [`ProcessManager`](crate::ProcessManager) can
 //! perform a graceful shutdown or reload.
 //!
 //! This module is compiled only when the crate’s **`signal`** feature is

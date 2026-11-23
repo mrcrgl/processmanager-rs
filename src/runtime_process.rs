@@ -159,8 +159,6 @@ pub enum ProcessOperation<T> {
 
 /// Built-in control messages understood by runtime helpers such as
 /// [`RuntimeTicker`] and [`RuntimeGuard`].
-/// Built-in control messages understood by runtime helpers such as
-/// [`RuntimeGuard`](crate::RuntimeGuard) and [`RuntimeTicker`](crate::RuntimeTicker).
 ///
 /// The enum is marked `#[non_exhaustive]`, requiring downstream crates to add a
 /// wildcard arm (`_`) when pattern-matching so that new variants introduced in
