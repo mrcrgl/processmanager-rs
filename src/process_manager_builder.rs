@@ -84,6 +84,23 @@ impl ProcessManagerBuilder {
         self
     }
 
+    /// Install a [`SignalReceiver`](crate::builtin::SignalReceiver) wired to
+    /// this manager.
+    ///
+    /// * `SIGTERM`, `SIGINT`, `SIGQUIT` shut the manager down gracefully;
+    ///   `process_start` then returns `Ok(())` unless a child failed.
+    /// * `SIGHUP` calls `reload()` on the manager, reaching every child.
+    ///
+    /// Signals are process-wide, so call this on the root manager only.
+    #[cfg(feature = "signal")]
+    pub fn handle_signals(mut self) -> Self {
+        self.initializers.push(Box::new(|mgr: &mut ProcessManager| {
+            let target = mgr.weak_handle();
+            mgr.insert(crate::builtin::SignalReceiver::for_manager(target));
+        }));
+        self
+    }
+
     /// Register a child that should be present right from the start.
     ///
     /// This is the compile-time safe counterpart to `ProcessManager::insert`.
