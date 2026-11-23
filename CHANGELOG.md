@@ -36,6 +36,10 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   child ran healthily for `duration` (default: 60s) (`#4`).
 
 ### Changed
+- `RestartSupervisor` no longer wakes every 50 ms while its child runs, and
+  a manager's shutdown waits for each child with a notification instead of
+  polling every 10 ms. `RestartBackoff` computes the delay in constant time
+  instead of looping once per failure (#73).
 - **Breaking:** the empty `manager` feature is removed; drop it from
   `features = [...]` (#75).
 - tokio is requested with only `macros`, `rt`, `sync` and `time`, so the
