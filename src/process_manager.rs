@@ -2,8 +2,10 @@
 //
 //! A `ProcessManager` can
 //!
-//! • be filled with children *before* it is started via [`insert`]
-//! • accept additional children *after* it has started via [`add`]
+//! • be filled with children *before* it is started via
+//!   [`insert`](ProcessManager::insert)
+//! • accept additional children *after* it has started via
+//!   [`add`](ProcessManager::add)
 //!
 //! Each child runs in its own Tokio task.  The first child that returns an
 //! `Err(_)` causes the supervisor to propagate `shutdown()` to all remaining
@@ -106,12 +108,13 @@ impl ProcessManager {
     /// Creates a fresh supervisor.
     ///
     /// * A unique *process-manager id* is assigned automatically.
-    /// * [`auto_cleanup`](ProcessManager::auto_cleanup) is **enabled** by
+    /// * [`auto_cleanup`](crate::ProcessManagerBuilder::auto_cleanup) is **enabled** by
     ///   default so that finished children are removed from the internal
     ///   bookkeeping lists.
     ///
-    /// The manager may be configured further with [`insert`] **before** it is
-    /// started or with [`add`] **after** it is running.
+    /// The manager may be configured further with [`insert`](Self::insert)
+    /// **before** it is started or with [`add`](Self::add) **after** it is
+    /// running.
     pub fn new() -> Self {
         let id = PID.fetch_add(1, Ordering::SeqCst);
 
@@ -154,7 +157,7 @@ impl ProcessManager {
     /// Registers a child **before** the supervisor itself is started.
     ///
     /// # Panics
-    /// Panics if the manager is already running.  Use [`add`] in that case.
+    /// Panics if the manager is already running.  Use [`add`](Self::add) in that case.
     pub fn insert(&mut self, process: impl Runnable) {
         assert!(
             !self.inner.running.load(Ordering::SeqCst),
@@ -169,7 +172,7 @@ impl ProcessManager {
     /// The new `Runnable` is spawned immediately in its own Tokio task.
     ///
     /// # Panics
-    /// Panics if called before start-up. Use [`insert`] during setup.
+    /// Panics if called before start-up. Use [`insert`](Self::insert) during setup.
     pub fn add(&self, process: impl Runnable) {
         let proc: Arc<dyn Runnable> = Arc::from(Box::new(process) as Box<dyn Runnable>);
 
@@ -318,8 +321,9 @@ impl Runnable for ProcessManager {
 
     /// Returns the supervisor’s public name.
     ///
-    /// If [`custom_name`](ProcessManager::custom_name) is `Some`, that value is
-    /// returned verbatim; otherwise the default pattern
+    /// If a custom name was set via
+    /// [`ProcessManagerBuilder::name`](crate::ProcessManagerBuilder::name), that
+    /// value is returned verbatim; otherwise the default pattern
     /// `"process-manager-<id>"` is used.
     fn process_name(&self) -> Cow<'static, str> {
         if let Some(ref name) = self.custom_name {

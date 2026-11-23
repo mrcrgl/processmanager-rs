@@ -44,6 +44,11 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --all-features -- -D warnings
 
+      - name: Build docs (deny warnings)
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
       - name: Run tests (default features)
         run: cargo test --all
 
