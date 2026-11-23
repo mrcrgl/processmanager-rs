@@ -1441,3 +1441,123 @@ mod early_shutdown {
         assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
     }
 }
+
+mod abort_propagation {
+    use super::*;
+
+    /// Ignores shutdown and counts how often it was still alive.
+    struct Stubborn {
+        ticks: Arc<AtomicUsize>,
+    }
+
+    impl Runnable for Stubborn {
+        fn process_start(&self) -> ProcFuture<'_> {
+            Box::pin(async {
+                loop {
+                    self.ticks.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+        }
+
+        fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+            Arc::new(StubControlHandle)
+        }
+    }
+
+    /// Asserts that `ticks` no longer advances, i.e. the stubborn child is gone.
+    async fn assert_stopped(ticks: &AtomicUsize) {
+        // Give an abort a moment to take effect.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let before = ticks.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let after = ticks.load(Ordering::SeqCst);
+        assert_eq!(
+            before, after,
+            "child is still running after its parent ended"
+        );
+    }
+
+    #[tokio::test]
+    async fn aborted_restart_supervisor_aborts_its_child() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let manager = ProcessManagerBuilder::default()
+            .shutdown_grace_period(Duration::from_millis(200))
+            .pre_insert(RestartSupervisor::new(Stubborn {
+                ticks: Arc::clone(&ticks),
+            }))
+            .build();
+        let handle = manager.process_handle();
+        let run = tokio::spawn(async move { manager.process_start().await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        handle.shutdown().await;
+        timeout(Duration::from_secs(2), run)
+            .await
+            .expect("manager must return after aborting the supervisor")
+            .expect("manager task panicked")
+            .expect_err("supervisor was aborted");
+
+        assert!(ticks.load(Ordering::SeqCst) > 0, "child never ran");
+        assert_stopped(&ticks).await;
+    }
+
+    #[tokio::test]
+    async fn aborted_nested_manager_aborts_its_children() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let nested = ProcessManagerBuilder::default()
+            // Longer than the outer grace period, so the outer manager aborts
+            // the nested one while it is still waiting for its child.
+            .shutdown_grace_period(Duration::from_secs(5))
+            .pre_insert(Stubborn {
+                ticks: Arc::clone(&ticks),
+            })
+            .build();
+        let outer = ProcessManagerBuilder::default()
+            .shutdown_grace_period(Duration::from_millis(200))
+            .pre_insert(nested)
+            .build();
+        let handle = outer.process_handle();
+        let run = tokio::spawn(async move { outer.process_start().await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        handle.shutdown().await;
+        timeout(Duration::from_secs(2), run)
+            .await
+            .expect("outer manager must return after aborting the nested one")
+            .expect("manager task panicked")
+            .expect_err("nested manager was aborted");
+
+        assert!(ticks.load(Ordering::SeqCst) > 0, "child never ran");
+        assert_stopped(&ticks).await;
+    }
+
+    #[tokio::test]
+    async fn dropping_manager_future_aborts_children() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let manager = ProcessManagerBuilder::default()
+            .pre_insert(Stubborn {
+                ticks: Arc::clone(&ticks),
+            })
+            .build();
+
+        // The timeout drops the process_start future while the child runs.
+        let _ = timeout(Duration::from_millis(50), manager.process_start()).await;
+
+        assert!(ticks.load(Ordering::SeqCst) > 0, "child never ran");
+        assert_stopped(&ticks).await;
+    }
+
+    #[tokio::test]
+    async fn dropping_restart_supervisor_future_aborts_child() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let supervisor = RestartSupervisor::new(Stubborn {
+            ticks: Arc::clone(&ticks),
+        });
+
+        let _ = timeout(Duration::from_millis(50), supervisor.process_start()).await;
+
+        assert!(ticks.load(Ordering::SeqCst) > 0, "child never ran");
+        assert_stopped(&ticks).await;
+    }
+}

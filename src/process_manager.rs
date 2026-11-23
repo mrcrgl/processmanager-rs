@@ -85,6 +85,25 @@ impl Child {
     }
 }
 
+/// Aborts every child task when dropped.
+///
+/// Held by the `process_start` future: if that future is dropped before it
+/// completes (e.g. a parent manager aborts this nested manager after its
+/// shutdown grace period), the children are aborted instead of being left
+/// running detached. After a normal return all children have finished, so
+/// the abort is a no-op.
+struct AbortChildrenOnDrop(Arc<Inner>);
+
+impl Drop for AbortChildrenOnDrop {
+    fn drop(&mut self) {
+        if let Ok(children) = self.0.processes.lock() {
+            for child in children.iter() {
+                child.join_handle.abort();
+            }
+        }
+    }
+}
+
 type ProcessCompletionChannel =
     tokio::sync::Mutex<mpsc::UnboundedReceiver<(usize, Result<(), RuntimeError>)>>;
 
@@ -226,6 +245,7 @@ impl Runnable for ProcessManager {
         let manager_handle = self.process_handle();
 
         Box::pin(async move {
+            let _abort_children = AbortChildrenOnDrop(Arc::clone(&inner));
             inner.running.store(true, Ordering::SeqCst);
 
             let name = self.process_name();

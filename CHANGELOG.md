@@ -23,6 +23,9 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   e.g. `RestartSupervisor(my_crate::Worker)` (`#4`).
 
 ### Fixed
+- Aborting or dropping a `RestartSupervisor` or a nested `ProcessManager`
+  (e.g. after a parent's shutdown grace period) now aborts its children
+  instead of leaving them running detached (`#63`).
 - A `ProcessManager` shutdown requested before or while `process_start` runs
   is no longer lost: it is remembered and delivered to children spawned
   afterwards, including children passed to `add()` during a shutdown. Each
