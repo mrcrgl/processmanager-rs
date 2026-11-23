@@ -2,9 +2,11 @@
 set -euo pipefail
 
 cargo fmt --all -- --check
-cargo clippy --all-features -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets --no-default-features --features log -- -D warnings
 cargo test --all
 cargo test --no-default-features
+cargo test --features log
 
 # Keep examples under CI-appropriate upper bounds.
 timeout 30s cargo run --example simple

@@ -3,6 +3,7 @@ name = "processmanager"
 description = "manage process lifecycles, graceful shutdown and process faults"
 version = "0.6.0"
 edition = "2024"
+rust-version = "1.85"
 authors = ["Marc Riegel <mail@mrcrgl.de>"]
 license = "MIT"
 readme = "README.md"

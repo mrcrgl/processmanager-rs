@@ -21,11 +21,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust (${{ matrix.toolchain }})
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
-          override: true
-          profile: minimal
           components: clippy, rustfmt
 
       # Re-use cargo build cache for faster CI runs
@@ -42,7 +40,11 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --all-features -- -D warnings
+        run: |
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo clippy --all-targets --no-default-features -- -D warnings
+          cargo clippy --all-targets --no-default-features --features log -- -D warnings
+          cargo clippy --all-targets --features log -- -D warnings
 
       - name: Build docs (deny warnings)
         run: cargo doc --no-deps --all-features
@@ -55,6 +57,9 @@ jobs:
       - name: Run tests (no default features)
         run: cargo test --no-default-features
 
+      - name: Run tests (log feature)
+        run: cargo test --features log
+
       - name: Run examples
         run: |
           timeout 30s cargo run --example simple
@@ -62,3 +67,29 @@ jobs:
           timeout 30s cargo run --example restart_supervisor
           timeout 30s cargo run --example runtime_context
           timeout 30s cargo run --example axum
+
+  msrv:
+    name: MSRV (1.85)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install Rust (1.85)
+        uses: dtolnay/rust-toolchain@1.85
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check (all features)
+        run: cargo check --locked --all-targets --all-features
+
+      - name: Check (no default features)
+        run: cargo check --locked --all-targets --no-default-features

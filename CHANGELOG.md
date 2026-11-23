@@ -7,6 +7,7 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `rust-version = "1.85"` in `Cargo.toml`, checked by a new MSRV CI job (#70).
 - `RuntimeError::Failed(BoxError)` carries a child's own typed error
   (transparent `Display`/`source`), created with `RuntimeError::failed(err)`
   and read back with `RuntimeError::downcast_ref::<E>()`; `?` converts
@@ -29,6 +30,9 @@ and its version numbers follow [Semantic Versioning](https://semver.org/).
   child ran healthily for `duration` (default: 60s) (`#4`).
 
 ### Changed
+- CI lints tests and examples (`--all-targets`), checks and tests the `log`
+  feature, uses `dtolnay/rust-toolchain`, and publishes with `--locked`;
+  `Cargo.lock` is now committed (#70).
 - **Breaking:** `RuntimeError` is `#[non_exhaustive]`; `match` it with a
   wildcard arm (`#68`).
 - `RestartSupervisor` no longer flattens errors into strings: giving up
