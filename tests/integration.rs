@@ -650,7 +650,81 @@ async fn test_shutdown_grace_period_is_configurable() {
         "expected shutdown to honor short configured grace period, got elapsed={elapsed:?}"
     );
 
-    manager_task.abort();
+    timeout(Duration::from_secs(1), manager_task)
+        .await
+        .expect("manager must return after its child was aborted")
+        .expect("manager task panicked");
+}
+
+struct DelayedFailController {
+    delay: Duration,
+}
+
+impl Runnable for DelayedFailController {
+    fn process_start(&self) -> ProcFuture<'_> {
+        Box::pin(async {
+            tokio::time::sleep(self.delay).await;
+            Err(RuntimeError::Internal {
+                message: "intentional failure".to_string(),
+            })
+        })
+    }
+
+    fn process_handle(&self) -> Arc<dyn ProcessControlHandler> {
+        Arc::new(StubControlHandle)
+    }
+}
+
+#[tokio::test]
+async fn test_process_start_returns_first_error_when_sibling_is_aborted() {
+    let manager = ProcessManagerBuilder::default()
+        .shutdown_grace_period(Duration::from_millis(200))
+        .pre_insert(IgnoreShutdownController::default())
+        .pre_insert(DelayedFailController {
+            delay: Duration::from_millis(50),
+        })
+        .build();
+
+    let result = timeout(Duration::from_secs(2), manager.process_start())
+        .await
+        .expect("process_start must return once the straggler is aborted");
+
+    match result {
+        Err(RuntimeError::Internal { message }) => assert_eq!(
+            message, "intentional failure",
+            "the first error must win over the abort error"
+        ),
+        other => panic!("expected the original failure, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_process_start_returns_after_external_shutdown_aborts_child() {
+    let manager = ProcessManagerBuilder::default()
+        .shutdown_grace_period(Duration::from_millis(100))
+        .pre_insert(IgnoreShutdownController::default())
+        .build();
+
+    let handle = manager.process_handle();
+    let manager_task = tokio::task::spawn(async move { manager.process_start().await });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    handle.shutdown().await;
+
+    let result = timeout(Duration::from_secs(1), manager_task)
+        .await
+        .expect("process_start must return after the child was aborted")
+        .expect("manager task panicked");
+
+    match result {
+        Err(RuntimeError::Internal { message }) => {
+            assert!(
+                message.contains("IgnoreShutdownController") && message.contains("aborted"),
+                "abort error must name the aborted child, got: {message}"
+            );
+        }
+        other => panic!("expected an abort error, got {other:?}"),
+    }
 }
 
 #[tokio::test]

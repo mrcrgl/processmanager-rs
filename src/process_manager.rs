@@ -446,19 +446,70 @@ impl ProcessControlHandler for Handle {
     }
 }
 
+type CompletionSender = mpsc::UnboundedSender<(usize, Result<(), RuntimeError>)>;
+
+/// Reports a child's completion to the supervisor exactly once.
+///
+/// If the child task is dropped before calling [`CompletionReporter::complete`]
+/// (e.g. because it was aborted after the shutdown grace period), the `Drop`
+/// implementation reports an [`RuntimeError::Internal`] instead, so the
+/// supervisor's accounting can never be skipped.
+struct CompletionReporter {
+    id: usize,
+    name: Cow<'static, str>,
+    tx: Option<CompletionSender>,
+}
+
+impl CompletionReporter {
+    fn new(id: usize, name: Cow<'static, str>, tx: CompletionSender) -> Self {
+        Self {
+            id,
+            name,
+            tx: Some(tx),
+        }
+    }
+
+    fn complete(mut self, res: Result<(), RuntimeError>) {
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send((self.id, res)); // ignore error if supervisor already gone
+        }
+    }
+}
+
+impl Drop for CompletionReporter {
+    fn drop(&mut self) {
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send((
+                self.id,
+                Err(RuntimeError::Internal {
+                    message: format!(
+                        "process {} was aborted before it completed (shutdown grace period exceeded)",
+                        self.name
+                    ),
+                }),
+            ));
+        }
+    }
+}
+
 /// Spawns one child task, converts panics into `RuntimeError`s and notifies the
 /// supervisor through the *completion channel*.
+///
+/// Completion is reported exactly once per child, including when the task is
+/// cancelled (aborted) before it finishes; see [`CompletionReporter`].
 ///
 /// Accounting with [`Inner::active`] is done **before** the task is actually
 /// spawned so the supervisor has an accurate count even if the spawn fails.
 fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) -> JoinHandle<()> {
     // increment *before* spawning the task – guarantees the counter is in sync
     inner.active.fetch_add(1, Ordering::SeqCst);
-    let tx = inner.completion_tx.clone();
+    let name = proc.process_name();
+    // Created before spawning so that even a task aborted before its first
+    // poll still reports completion when its future is dropped.
+    let reporter = CompletionReporter::new(id, name.clone(), inner.completion_tx.clone());
 
     tokio::spawn(async move {
         // Task already accounted for in the caller.
-        let name = proc.process_name();
         #[cfg(feature = "tracing")]
         ::tracing::info!(name = %name, "Start process");
         #[cfg(all(not(feature = "tracing"), feature = "log"))]
@@ -510,6 +561,6 @@ fn spawn_child(id: usize, proc: Arc<dyn Runnable>, inner: Arc<Inner>) -> JoinHan
             }
         }
 
-        let _ = tx.send((id, res)); // ignore error if supervisor already gone
+        reporter.complete(res);
     })
 }
