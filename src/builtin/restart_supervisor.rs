@@ -122,19 +122,25 @@ impl RestartBackoff {
         }
     }
 
+    /// `initial * factor^(failures - 1)`, capped at `max`; O(1) for any
+    /// number of failures.
     fn delay_for_failures(self, failures: u32) -> Duration {
-        if failures == 0 {
+        if failures == 0 || self.initial.is_zero() {
             return Duration::ZERO;
         }
-
-        let mut delay = self.initial;
-        for _ in 1..failures {
-            delay = delay.saturating_mul(self.factor);
-            if delay >= self.max {
-                return self.max;
-            }
-        }
-        delay.min(self.max)
+        // In u128 nanoseconds: any overflow is far beyond every `max`.
+        let factor = u128::from(self.factor.max(1));
+        factor
+            .checked_pow(failures - 1)
+            .and_then(|multiplier| self.initial.as_nanos().checked_mul(multiplier))
+            .filter(|&nanos| nanos < self.max.as_nanos())
+            .map_or(self.max, |nanos| {
+                // Below `max`, so the seconds fit in a u64.
+                Duration::new(
+                    (nanos / 1_000_000_000) as u64,
+                    (nanos % 1_000_000_000) as u32,
+                )
+            })
     }
 }
 
@@ -193,7 +199,6 @@ pub struct RestartSupervisor {
     backoff: RestartBackoff,
     restart_limit: Option<RestartLimit>,
     reset_after: Duration,
-    control_poll: Duration,
 }
 
 impl std::fmt::Debug for RestartSupervisor {
@@ -221,7 +226,6 @@ impl RestartSupervisor {
             backoff: RestartBackoff::default(),
             restart_limit: None,
             reset_after: DEFAULT_RESET_AFTER,
-            control_poll: Duration::from_millis(50),
         }
     }
 
@@ -270,7 +274,6 @@ impl Runnable for RestartSupervisor {
         let backoff = self.backoff;
         let restart_limit = self.restart_limit;
         let reset_after = self.reset_after;
-        let control_poll = self.control_poll;
         let guard = self.runtime_guard.clone();
         let child_name = child.process_name().to_string();
 
@@ -288,12 +291,10 @@ impl Runnable for RestartSupervisor {
 
                 // Child run-loop. React to control messages while the child is alive.
                 let child_result = loop {
-                    match ticker
-                        .tick(tokio::time::timeout(control_poll, &mut child_task))
-                        .await
-                    {
-                        ProcessOperation::Next(Ok(join_result)) => break join_result,
-                        ProcessOperation::Next(Err(_timeout)) => continue,
+                    // `&mut JoinHandle` is cancel-safe: a control message
+                    // drops only the borrow, not the child task.
+                    match ticker.tick(&mut child_task).await {
+                        ProcessOperation::Next(join_result) => break join_result,
                         ProcessOperation::Control(RuntimeControlMessage::Shutdown) => {
                             child_handle.shutdown().await;
                             let _ = child_task.await;
@@ -377,5 +378,62 @@ impl Runnable for RestartSupervisor {
 
     fn process_name(&self) -> Cow<'static, str> {
         Cow::Owned(format!("RestartSupervisor({})", self.child.process_name()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The loop this formula replaced, kept as the reference.
+    fn reference_delay(b: RestartBackoff, failures: u32) -> Duration {
+        if failures == 0 {
+            return Duration::ZERO;
+        }
+        let mut delay = b.initial;
+        for _ in 1..failures {
+            delay = delay.saturating_mul(b.factor.max(1));
+            if delay >= b.max {
+                return b.max;
+            }
+        }
+        delay.min(b.max)
+    }
+
+    #[test]
+    fn closed_form_matches_the_iterative_backoff() {
+        let configs = [
+            RestartBackoff::default(),
+            RestartBackoff::new(Duration::from_millis(1), Duration::from_secs(3600), 3),
+            RestartBackoff::new(Duration::from_millis(10), Duration::from_secs(1), 1),
+            RestartBackoff::new(Duration::ZERO, Duration::from_secs(1), 2),
+            RestartBackoff::new(Duration::from_secs(1), Duration::from_millis(500), 2),
+            RestartBackoff {
+                initial: Duration::from_millis(7),
+                max: Duration::from_secs(60),
+                factor: 0,
+            },
+            RestartBackoff::new(Duration::from_nanos(1), Duration::MAX, u32::MAX),
+        ];
+        for b in configs {
+            for failures in 0..200 {
+                assert_eq!(
+                    b.delay_for_failures(failures),
+                    reference_delay(b, failures),
+                    "{b:?}, failures={failures}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn huge_failure_counts_are_capped() {
+        let b = RestartBackoff::default();
+        assert_eq!(b.delay_for_failures(u32::MAX), b.max);
+        let constant = RestartBackoff::new(Duration::from_millis(5), Duration::from_secs(1), 1);
+        assert_eq!(
+            constant.delay_for_failures(u32::MAX),
+            Duration::from_millis(5)
+        );
     }
 }

@@ -2015,3 +2015,80 @@ mod restart {
             .expect("clean shutdown");
     }
 }
+
+mod no_polling {
+    use super::*;
+
+    /// #73: with the clock paused, a sleep-poll would advance it. Waiting
+    /// for a child that stops as soon as it is asked must take no time.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_waits_for_children_without_sleeping() {
+        let manager = Arc::new(ProcessManagerBuilder::default().build());
+        for id in 0..3 {
+            manager
+                .add(ExampleController {
+                    id,
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        let run = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            async move { manager.process_start().await }
+        });
+        // Let the children start.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+
+        let started = tokio::time::Instant::now();
+        manager.process_handle().shutdown().await;
+        assert_eq!(started.elapsed(), Duration::ZERO);
+
+        run.await.unwrap().expect("clean shutdown");
+    }
+
+    /// Counts how often the wrapped future is polled.
+    struct PollCounter<F> {
+        inner: std::pin::Pin<Box<F>>,
+        polls: Arc<AtomicUsize>,
+    }
+
+    impl<F: std::future::Future> std::future::Future for PollCounter<F> {
+        type Output = F::Output;
+
+        fn poll(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<F::Output> {
+            self.polls.fetch_add(1, Ordering::SeqCst);
+            self.inner.as_mut().poll(cx)
+        }
+    }
+
+    /// #73: a supervisor whose child is idle must not wake up on a timer.
+    #[tokio::test(start_paused = true)]
+    async fn restart_supervisor_does_not_wake_while_child_runs() {
+        let supervisor = Arc::new(RestartSupervisor::new(ExampleController::default()));
+        let polls = Arc::new(AtomicUsize::new(0));
+        let run = tokio::spawn({
+            let supervisor = Arc::clone(&supervisor);
+            let polls = Arc::clone(&polls);
+            async move {
+                PollCounter {
+                    inner: Box::pin(supervisor.process_start()),
+                    polls,
+                }
+                .await
+            }
+        });
+
+        // ExampleController ticks once a second; stay below that.
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        let idle_polls = polls.load(Ordering::SeqCst);
+        assert!(idle_polls <= 2, "supervisor was polled {idle_polls} times");
+
+        supervisor.process_handle().shutdown().await;
+        run.await.unwrap().expect("clean shutdown");
+    }
+}
