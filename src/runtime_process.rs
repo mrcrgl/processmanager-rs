@@ -21,7 +21,7 @@ use crate::{RuntimeGuard, RuntimeTicker};
 pub type ProcFuture<'a> = Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>>;
 
 /// Trait implemented by every long-running asynchronous component that should
-/// be supervised by a [`ProcessManager`].
+/// be supervised by a [`ProcessManager`](crate::ProcessManager).
 ///
 /// The trait is **object-safe** and requires `Send + Sync + 'static`, allowing
 /// implementors to be moved across tasks and shared between threads.
