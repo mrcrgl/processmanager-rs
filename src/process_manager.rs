@@ -3,8 +3,8 @@
 //! A `ProcessManager` can
 //!
 //! • be filled with children *before* it is started via
-//!   [`insert`](ProcessManager::insert)
-//! • accept additional children *after* it has started via
+//!   [`insert`](ProcessManager::insert) (or [`add`](ProcessManager::add))
+//! • accept additional children *while it is running* via
 //!   [`add`](ProcessManager::add)
 //!
 //! Each child runs in its own Tokio task.  The first child that returns an
@@ -96,13 +96,61 @@ struct AbortChildrenOnDrop(Arc<Inner>);
 
 impl Drop for AbortChildrenOnDrop {
     fn drop(&mut self) {
-        if let Ok(children) = self.0.processes.lock() {
-            for child in children.iter() {
+        if let Ok(mut registry) = self.0.registry.lock() {
+            // Also covers an aborted supervisor: `add` must not spawn into a
+            // manager that is no longer running.
+            registry.phase = Phase::Stopped;
+            for child in registry.children.iter() {
                 child.join_handle.abort();
             }
         }
     }
 }
+
+/// Lifecycle of a [`ProcessManager`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// `process_start` has not run yet.
+    NotStarted,
+    /// `process_start` is running.
+    Running,
+    /// `process_start` has returned (it may be started again, e.g. by a
+    /// `RestartSupervisor`).
+    Stopped,
+}
+
+/// Lifecycle state and children, guarded by a single lock so that `add`,
+/// start-up and the supervisor's exit decision cannot interleave.
+struct Registry {
+    phase: Phase,
+    /// Children of the current run.
+    children: Vec<Child>,
+    /// Children spawned by every `process_start` (from `insert`, and from
+    /// `add` before the first start).
+    template: Vec<Arc<dyn Runnable>>,
+}
+
+/// Why [`ProcessManager::add`] did not accept a child.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AddError {
+    /// The manager has stopped: its `process_start` has returned (or was
+    /// aborted).
+    Stopped,
+    /// The manager is shutting down.
+    ShuttingDown,
+}
+
+impl std::fmt::Display for AddError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AddError::Stopped => write!(f, "process manager has stopped"),
+            AddError::ShuttingDown => write!(f, "process manager is shutting down"),
+        }
+    }
+}
+
+impl std::error::Error for AddError {}
 
 type ProcessCompletionChannel =
     tokio::sync::Mutex<mpsc::UnboundedReceiver<(usize, Result<(), RuntimeError>)>>;
@@ -110,11 +158,10 @@ type ProcessCompletionChannel =
 /// Shared state between the handle you pass around, the supervisor task and all
 /// children.
 struct Inner {
-    processes: Mutex<Vec<Child>>,
-    running: AtomicBool,
-    /// Latched by [`Handle::shutdown`] so that children spawned afterwards
-    /// (pre-start children in `process_start`, or via `add`) are shut down
-    /// too. Reset when `process_start` returns.
+    registry: Mutex<Registry>,
+    /// Latched by [`Handle::shutdown`] so that pre-start children spawned
+    /// afterwards are shut down too, and `add` rejects new children. Reset
+    /// when `process_start` returns.
     shutdown_requested: AtomicBool,
     next_id: AtomicUsize,
     active: AtomicUsize,
@@ -127,7 +174,6 @@ struct Inner {
 /// Groups several [`Runnable`] instances and starts / stops them as a unit.
 pub struct ProcessManager {
     id: usize,
-    pre_start: Vec<Arc<dyn Runnable>>,
     inner: Arc<Inner>,
     /// Optional human-readable name overriding the default
     /// `"process-manager-<id>"`.
@@ -148,9 +194,8 @@ impl ProcessManager {
     ///   default so that finished children are removed from the internal
     ///   bookkeeping lists.
     ///
-    /// The manager may be configured further with [`insert`](Self::insert)
-    /// **before** it is started or with [`add`](Self::add) **after** it is
-    /// running.
+    /// Children are registered with [`insert`](Self::insert) or
+    /// [`add`](Self::add).
     pub fn new() -> Self {
         let id = PID.fetch_add(1, Ordering::SeqCst);
 
@@ -158,10 +203,12 @@ impl ProcessManager {
 
         Self {
             id,
-            pre_start: Vec::new(),
             inner: Arc::new(Inner {
-                processes: Mutex::new(Vec::new()),
-                running: AtomicBool::new(false),
+                registry: Mutex::new(Registry {
+                    phase: Phase::NotStarted,
+                    children: Vec::new(),
+                    template: Vec::new(),
+                }),
                 shutdown_requested: AtomicBool::new(false),
                 next_id: AtomicUsize::new(0),
                 active: AtomicUsize::new(0),
@@ -190,48 +237,60 @@ impl ProcessManager {
         inner.shutdown_grace_period = duration;
     }
 
-    /// Registers a child **before** the supervisor itself is started.
+    /// Registers a child that is spawned every time the manager starts.
     ///
     /// # Panics
-    /// Panics if the manager is already running.  Use [`add`](Self::add) in that case.
+    /// Panics if the manager is running. Use [`add`](Self::add) in that case.
     pub fn insert(&mut self, process: impl Runnable) {
+        let mut registry = self.inner.registry.lock().unwrap();
         assert!(
-            !self.inner.running.load(Ordering::SeqCst),
-            "cannot call insert() after manager has started – use add() instead"
+            registry.phase != Phase::Running,
+            "cannot call insert() while the manager is running – use add() instead"
         );
-        self.pre_start
+        registry
+            .template
             .push(Arc::from(Box::new(process) as Box<dyn Runnable>));
     }
 
-    /// Adds a child **while the manager is already running**.
+    /// Adds a child.
     ///
-    /// The new `Runnable` is spawned immediately in its own Tokio task.
+    /// * **Before the manager has started**, the child is queued and spawned
+    ///   when [`process_start`](Runnable::process_start) runs, exactly like
+    ///   [`insert`](Self::insert). This includes the moment right after
+    ///   `tokio::spawn(manager.process_start())`, before that future first
+    ///   runs.
+    /// * **While the manager is running**, the child is spawned immediately in
+    ///   its own Tokio task. It belongs to the current run only and is not
+    ///   spawned again if the manager is restarted.
     ///
-    /// # Panics
-    /// Panics if called before start-up. Use [`insert`](Self::insert) during setup.
-    pub fn add(&self, process: impl Runnable) {
+    /// # Errors
+    /// * [`AddError::ShuttingDown`] while the manager is shutting down.
+    /// * [`AddError::Stopped`] once the manager's `process_start` has
+    ///   returned.
+    pub fn add(&self, process: impl Runnable) -> Result<(), AddError> {
         let proc: Arc<dyn Runnable> = Arc::from(Box::new(process) as Box<dyn Runnable>);
 
-        assert!(
-            self.inner.running.load(Ordering::SeqCst),
-            "cannot call add() before manager has started – use insert() instead"
-        );
-
-        // Running → register & spawn immediately.
-        let id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
-        self.inner
-            .processes
-            .lock()
-            .unwrap()
-            .push(Child::new(id, proc, &self.inner));
-
-        // A shutdown may have taken its snapshot before this child was
-        // registered; make sure the child is shut down as well.
-        if self.inner.shutdown_requested.load(Ordering::SeqCst) {
-            let handle = Handle {
-                inner: Arc::clone(&self.inner),
-            };
-            tokio::spawn(async move { handle.shutdown().await });
+        // Decided under the registry lock: the supervisor only stops while
+        // holding it, and only if no child is active. Registering a child
+        // here makes it active, so it cannot be orphaned by a concurrent exit.
+        let mut registry = self.inner.registry.lock().unwrap();
+        match registry.phase {
+            Phase::NotStarted => {
+                registry.template.push(proc);
+                Ok(())
+            }
+            Phase::Stopped => Err(AddError::Stopped),
+            Phase::Running => {
+                // `Handle::shutdown` sets the flag before taking its snapshot
+                // under this lock, so a child either lands in that snapshot or
+                // is rejected here.
+                if self.inner.shutdown_requested.load(Ordering::SeqCst) {
+                    return Err(AddError::ShuttingDown);
+                }
+                let id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
+                registry.children.push(Child::new(id, proc, &self.inner));
+                Ok(())
+            }
         }
     }
 }
@@ -240,13 +299,11 @@ impl Runnable for ProcessManager {
     fn process_start(&self) -> ProcFuture<'_> {
         let inner = Arc::clone(&self.inner);
         let auto_cleanup = self.auto_cleanup;
-        let initial = self.pre_start.clone();
 
         let manager_handle = self.process_handle();
 
         Box::pin(async move {
             let _abort_children = AbortChildrenOnDrop(Arc::clone(&inner));
-            inner.running.store(true, Ordering::SeqCst);
 
             let name = self.process_name();
 
@@ -258,13 +315,14 @@ impl Runnable for ProcessManager {
             eprintln!("Start process manager {name}");
 
             /* -- spawn every child registered before start() ---------------- */
-            for proc in initial {
-                let id = inner.next_id.fetch_add(1, Ordering::SeqCst);
-                inner
-                    .processes
-                    .lock()
-                    .unwrap()
-                    .push(Child::new(id, proc, &inner));
+            {
+                let mut registry = inner.registry.lock().unwrap();
+                registry.phase = Phase::Running;
+                let template = registry.template.clone();
+                for proc in template {
+                    let id = inner.next_id.fetch_add(1, Ordering::SeqCst);
+                    registry.children.push(Child::new(id, proc, &inner));
+                }
             }
 
             // A shutdown requested before (or while) the children were
@@ -289,7 +347,7 @@ impl Runnable for ProcessManager {
             loop {
                 #[cfg(feature = "tracing")]
                 {
-                    for child in self.inner.processes.lock().unwrap().iter() {
+                    for child in self.inner.registry.lock().unwrap().children.iter() {
                         ::tracing::debug!(
                             "Process {}: running={:?}",
                             child.proc.process_name(),
@@ -298,11 +356,16 @@ impl Runnable for ProcessManager {
                     }
                 }
 
-                // exit criterion: no active children left
-                if inner.active.load(Ordering::SeqCst) == 0 {
-                    inner.running.store(false, Ordering::SeqCst);
-                    inner.shutdown_requested.store(false, Ordering::SeqCst);
-                    break;
+                // exit criterion: no active children left. Checked under the
+                // registry lock so a concurrent `add` either registers its
+                // child first (keeping the manager running) or sees `Stopped`.
+                {
+                    let mut registry = inner.registry.lock().unwrap();
+                    if inner.active.load(Ordering::SeqCst) == 0 {
+                        registry.phase = Phase::Stopped;
+                        inner.shutdown_requested.store(false, Ordering::SeqCst);
+                        break;
+                    }
                 }
 
                 match completion_rx.recv().await {
@@ -310,7 +373,12 @@ impl Runnable for ProcessManager {
                         match res {
                             Ok(()) => {
                                 if auto_cleanup {
-                                    inner.processes.lock().unwrap().retain(|c| c.id != cid);
+                                    inner
+                                        .registry
+                                        .lock()
+                                        .unwrap()
+                                        .children
+                                        .retain(|c| c.id != cid);
                                 }
                             }
                             // A termination request is a graceful stop, not a
@@ -336,7 +404,7 @@ impl Runnable for ProcessManager {
                     }
                     None => {
                         // Sender dropped – supervisor should stop.
-                        inner.running.store(false, Ordering::SeqCst);
+                        inner.registry.lock().unwrap().phase = Phase::Stopped;
                         inner.shutdown_requested.store(false, Ordering::SeqCst);
                         return Err(RuntimeError::Internal {
                             message: "completion channel closed unexpectedly".into(),
@@ -468,8 +536,9 @@ impl ProcessControlHandler for Handle {
             let mut set = JoinSet::new();
 
             let handles = {
-                let guard = inner.processes.lock().unwrap();
-                guard
+                let registry = inner.registry.lock().unwrap();
+                registry
+                    .children
                     .iter()
                     .filter(|child| !child.join_handle.is_finished())
                     .map(|child| {
@@ -549,8 +618,9 @@ impl ProcessControlHandler for Handle {
             let mut set = JoinSet::new();
 
             let handles = {
-                let guard = inner.processes.lock().unwrap();
-                guard
+                let registry = inner.registry.lock().unwrap();
+                registry
+                    .children
                     .iter()
                     .filter(|child| !child.join_handle.is_finished())
                     .map(|child| Arc::clone(&child.handle))
